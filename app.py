@@ -188,17 +188,6 @@ with st.sidebar:
         "arbeiten - der Grund, warum sich Kräne nie überholen dürfen.",
     )
 
-    st.markdown("**Referenz**")
-    run_exact_clicked = st.button(
-        "🎯 Exakte Lösung berechnen (OR-Tools CP-SAT)",
-        use_container_width=True,
-        help="Löst das vollständige Scheduling-Modell exakt - dient als Cross-Check für die "
-        f"Heuristiken. Auf {C.EXACT_SOLVE_TIME_LIMIT_SECONDS}s begrenzt (bei vielen Bays/Kränen "
-        "manchmal nur die beste gefundene, nicht bewiesen optimale Lösung - wird dann so "
-        "gekennzeichnet). Läuft bewusst nur auf Klick, nicht automatisch bei jeder Änderung - "
-        "kann bei großen Szenarien mehrere Sekunden dauern.",
-    )
-
     st.button(
         "🎲 Neues Zufallsschiff generieren",
         use_container_width=True,
@@ -244,21 +233,6 @@ baseline = max(results, key=lambda r: r["makespan"])
 time_saved = baseline["makespan"] - best["makespan"]
 pct_saved = (time_saved / baseline["makespan"] * 100) if baseline["makespan"] > 0 else 0.0
 
-if run_exact_clicked:
-    st.session_state["exact_scenario_key"] = scenario_key
-
-exact_result = None
-exact_stale = False
-if st.session_state.get("exact_scenario_key") == scenario_key:
-    polish_tasks = results[2]["tasks"]  # "Greedy + lokale Suche" - dient CP-SAT als Hint
-    with st.spinner(f"Berechne exakte Lösung (OR-Tools CP-SAT, bis zu {C.EXACT_SOLVE_TIME_LIMIT_SECONDS}s)..."):
-        exact_result = _compute_exact(*scenario_key, polish_tasks)
-elif "exact_scenario_key" in st.session_state:
-    # Einstellungen haben sich seit der letzten exakten Berechnung geändert - die alte Lösung
-    # gehört zu einem anderen Szenario und wird bewusst NICHT mehr angezeigt, statt irreführend
-    # stehen zu bleiben.
-    exact_stale = True
-
 st.markdown("## 🎯 Ihr kürzester Kranplan")
 st.caption(f"Methode: **{best['label']}** - wird bei jedem Lauf neu anhand der Liegezeit bestimmt.")
 
@@ -277,53 +251,6 @@ if time_saved > 1:
     st.success(
         f"⏱️ **{best['label']}** spart hier ca. **{time_saved:.1f} min** ({pct_saved:.1f}%) "
         f"Liegezeit gegenüber '{baseline['label']}'."
-    )
-
-if exact_result is not None:
-    exact_eval = exact_result["eval"]
-    gap = best["makespan"] - exact_eval["makespan"]
-    gap_pct = (gap / exact_eval["makespan"] * 100) if exact_eval["makespan"] > 0 else 0.0
-
-    if exact_result["optimal"]:
-        if gap < 1:
-            st.info(
-                f"✅ Exakter Referenzlöser (OR-Tools, optimal gelöst, "
-                f"{exact_result['wall_time_ms']:.0f} ms): **{best['label']}** erreicht bereits "
-                f"das Optimum ({exact_eval['makespan']:.1f} min)."
-            )
-        else:
-            st.info(
-                f"📐 Exakter Referenzlöser (OR-Tools, optimal gelöst, "
-                f"{exact_result['wall_time_ms']:.0f} ms): Optimum liegt bei "
-                f"{exact_eval['makespan']:.1f} min - Lücke zur besten Heuristik: {gap:.1f} min "
-                f"({gap_pct:.1f}%)."
-            )
-    else:
-        if gap <= 1:
-            st.warning(
-                f"⏱️ Exakter Referenzlöser (OR-Tools, Zeitlimit erreicht, kein Optimalitäts-"
-                f"beweis, {exact_result['wall_time_ms']:.0f} ms): **{best['label']}** "
-                f"({best['makespan']:.1f} min) erreicht oder unterbietet sogar die beste vom "
-                f"Solver gefundene Lösung ({exact_eval['makespan']:.1f} min) - das tatsächliche "
-                f"Optimum könnte noch darunter liegen."
-            )
-        else:
-            st.warning(
-                f"⏱️ Exakter Referenzlöser (OR-Tools, Zeitlimit erreicht, kein Optimalitäts-"
-                f"beweis, {exact_result['wall_time_ms']:.0f} ms): beste bislang gefundene "
-                f"Lösung liegt bei {exact_eval['makespan']:.1f} min - {gap:.1f} min ({gap_pct:.1f}%) "
-                f"unter der besten Heuristik, aber ohne Optimalitätsgarantie."
-            )
-elif exact_stale:
-    st.info(
-        "ℹ️ Die zuletzt berechnete exakte Lösung bezog sich auf ein anderes Szenario - "
-        "Einstellungen links geändert? Erneut auf '🎯 Exakte Lösung berechnen' klicken, um sie "
-        "für die aktuelle Konfiguration zu erhalten."
-    )
-else:
-    st.caption(
-        "💡 Exaktes Optimum als Cross-Check sehen? Button '🎯 Exakte Lösung berechnen' in der "
-        "Seitenleiste - läuft nur auf Klick, da es bei großen Szenarien einige Sekunden dauern kann."
     )
 
 fig_best = build_crane_trajectory_chart(instance, best, title=best["label"])
@@ -434,23 +361,90 @@ else:
 st.markdown("---")
 
 with st.expander("🔧 Wie wir das erreichen – vollständiger Methodenvergleich"):
-    all_results = list(results)
-    if exact_result is not None:
-        all_results.append(exact_result["eval"])
+    prefixes = ["naive", "zone", "polish"]
+    tab_labels = [r["label"] for r in results] + ["🧮 Exakt (OR-Tools)", "📊 Vergleich"]
+    tabs = st.tabs(tab_labels)
 
-    st.dataframe(
-        comparison_table(all_results),
-        use_container_width=True,
-        hide_index=True,
-        column_config=COMPARISON_TABLE_COLUMN_CONFIG,
-    )
-    st.plotly_chart(build_makespan_comparison_chart(all_results), use_container_width=True)
-
-    prefixes = ["naive", "zone", "polish", "exact"]
-    tabs = st.tabs([r["label"] for r in all_results])
-    for tab, r, prefix in zip(tabs, all_results, prefixes):
+    for tab, r, prefix in zip(tabs[: len(results)], results, prefixes):
         with tab:
             render_crane_panel(prefix, r["label"], instance, r)
+
+    tab_exact, tab_compare = tabs[len(results)], tabs[len(results) + 1]
+
+    exact_eval = None
+    with tab_exact:
+        st.caption(
+            "Löst dasselbe Scheduling-Modell exakt statt mit unseren eigenen Verfahren - dient als "
+            f"Cross-Check. Auf {C.EXACT_SOLVE_TIME_LIMIT_SECONDS}s begrenzt (bei vielen Bays/Kränen "
+            "manchmal nur die beste gefundene, nicht bewiesen optimale Lösung - wird dann so "
+            "gekennzeichnet)."
+        )
+        solve_clicked = st.button("🧮 Mit OR-Tools lösen", key="exact_solve_btn")
+        if solve_clicked:
+            st.session_state["exact_scenario_key"] = scenario_key
+
+        if st.session_state.get("exact_scenario_key") == scenario_key:
+            polish_tasks = results[2]["tasks"]  # "Greedy + lokale Suche" - dient CP-SAT als Hint
+            with st.spinner(f"Berechne exakte Lösung (OR-Tools CP-SAT, bis zu {C.EXACT_SOLVE_TIME_LIMIT_SECONDS}s)..."):
+                exact_result = _compute_exact(*scenario_key, polish_tasks)
+
+            if exact_result is None:
+                st.error(
+                    "🚫 OR-Tools hat innerhalb des Zeitlimits keine gültige Lösung gefunden. Bitte "
+                    "Sicherheitsabstand verringern oder Kranzahl reduzieren."
+                )
+            else:
+                exact_eval = exact_result["eval"]
+                gap = best["makespan"] - exact_eval["makespan"]
+                gap_pct = (gap / exact_eval["makespan"] * 100) if exact_eval["makespan"] > 0 else 0.0
+
+                if exact_result["optimal"]:
+                    if gap < 1:
+                        st.info(
+                            f"✅ Optimal gelöst ({exact_result['wall_time_ms']:.0f} ms): "
+                            f"**{best['label']}** erreicht bereits das Optimum "
+                            f"({exact_eval['makespan']:.1f} min)."
+                        )
+                    else:
+                        st.info(
+                            f"📐 Optimal gelöst ({exact_result['wall_time_ms']:.0f} ms): Optimum "
+                            f"liegt bei {exact_eval['makespan']:.1f} min - Lücke zur besten "
+                            f"Heuristik: {gap:.1f} min ({gap_pct:.1f}%)."
+                        )
+                else:
+                    if gap <= 1:
+                        st.warning(
+                            f"⏱️ Zeitlimit erreicht, kein Optimalitätsbeweis "
+                            f"({exact_result['wall_time_ms']:.0f} ms): **{best['label']}** "
+                            f"({best['makespan']:.1f} min) erreicht oder unterbietet sogar die "
+                            f"beste vom Solver gefundene Lösung ({exact_eval['makespan']:.1f} min)."
+                        )
+                    else:
+                        st.warning(
+                            f"⏱️ Zeitlimit erreicht, kein Optimalitätsbeweis "
+                            f"({exact_result['wall_time_ms']:.0f} ms): beste bislang gefundene "
+                            f"Lösung liegt bei {exact_eval['makespan']:.1f} min - {gap:.1f} min "
+                            f"({gap_pct:.1f}%) unter der besten Heuristik, aber ohne "
+                            "Optimalitätsgarantie."
+                        )
+                render_crane_panel("exact", exact_eval["label"], instance, exact_eval)
+        elif "exact_scenario_key" in st.session_state:
+            st.info(
+                "ℹ️ Die zuletzt berechnete exakte Lösung bezog sich auf ein anderes Szenario - "
+                "Einstellungen geändert? Erneut auf '🧮 Mit OR-Tools lösen' klicken."
+            )
+        else:
+            st.info("Noch keine Lösung berechnet – auf den Button oben klicken.")
+
+    with tab_compare:
+        all_results = list(results) + ([exact_eval] if exact_eval is not None else [])
+        st.dataframe(
+            comparison_table(all_results),
+            use_container_width=True,
+            hide_index=True,
+            column_config=COMPARISON_TABLE_COLUMN_CONFIG,
+        )
+        st.plotly_chart(build_makespan_comparison_chart(all_results), use_container_width=True)
 
 with st.expander("Wie funktioniert diese Demo?"):
     st.markdown(
