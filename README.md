@@ -252,6 +252,46 @@ erlaubte Größe): `build_schedule` im Mittel 1.45ms -> 0.28ms pro Aufruf (Worst
 9.8ms -> 0.5ms), `greedy_and_polish` (inkl. voller lokaler Suche, 400 Züge) 0.70s -> 0.10s -
 knapp 7x schneller bei jedem Preset-/Regler-Wechsel in der App.
 
+## Fund: CI schlug fehl - und deckte dabei einen echten Modellierungsfehler im exakten Löser auf
+
+Die GitHub-Actions-Pipeline (`.github/workflows/tests.yml`) lief lokal nie, meldete beim ersten
+echten Durchlauf aber drei Fehlschläge in den CP-SAT-Tests - alle mit Zeitüberschreitung. Ursache:
+`num_search_workers` war seit dem allerersten Commit fest auf 8 verdrahtet, GitHub-gehostete
+Runner haben aber nur 2 vCPUs - 8 parallele Suchpfade auf 2 echten Kernen konkurrieren nur noch um
+Kontextwechsel, statt zu parallelisieren, und lassen selbst kleine Instanzen nicht mehr innerhalb
+der (für eine gute Dev-Maschine bemessenen) Zeitlimits fertig werden. Fix: `NUM_SEARCH_WORKERS =
+min(8, os.cpu_count() or 1)` passt sich automatisch der tatsächlichen Hardware an; zusätzlich
+bekamen die drei betroffenen Tests großzügigere Zeitlimits (10-15s -> 25s), weil selbst mit
+korrekt dimensionierten Workern 2 echte Kerne schlicht weniger Rechenleistung pro Sekunde liefern
+als eine Dev-Maschine - kein Oversubscription-Problem mehr, aber trotzdem weniger Leistung.
+
+**Bei der Fehlersuche dafür (Nutzerfrage: "ist der CP-SAT-Pfad noch korrekt, oder kann man da noch
+was verbessern?") fiel ein tieferer, unabhängiger Modellierungsfehler auf**, der seit der
+allerersten Version bestand: die Sonderbehandlung für die ALLERERSTE Fahrt eines Krans (von seiner
+Startposition zur ersten Aufgabe, siehe Fund weiter oben zur Fahrt-Überschneidung) bot für die
+Fahrkorridor-Prüfung nur EINE Ausweichmöglichkeit ("die störende Aufgabe beginnt komplett nach
+unserer Ankunft") und begründete das Fehlen der zweiten ("die störende Aufgabe kann nicht VORHER
+enden, ohne mit dem Wartefenster am Ursprung zu kollidieren") - diese Begründung stimmt aber nur,
+wenn die URSPRUNGSPOSITION selbst ebenfalls zu nah an der störenden Aufgabe liegt. Liegt nur der
+FAHRKORRIDOR zu nah dran, die Startposition selbst aber sicher, ist "die störende Aufgabe endet,
+BEVOR unsere Fahrt überhaupt beginnt" eine völlig gültige, aber im Modell fehlende Alternative.
+
+Bewiesen per Gegenbeispiel statt bloßer Vermutung: ein von Hand gebauter Zeitplan, den
+`check_feasible` (die unabhängige, stetige Referenzprüfung) als vollständig sicher bestätigt,
+wurde vom CP-SAT-Modell (Variablen exakt auf diesen Zeitplan fixiert, siehe
+`test_first_travel_constraint_accepts_a_safe_schedule`) als **INFEASIBLE** zurückgewiesen. Die
+praktische Folgewirkung: der exakte Löser konnte in genau dieser Konstellation ein tatsächlich
+erreichbares (und ggf. besseres) Optimum übersehen und stattdessen unnötig lange Wartezeit
+erzwingen oder länger für den Optimalitätsbeweis brauchen. Fix in
+[quaycrane_cp_solver.py](quaycrane_cp_solver.py): die Fahrkorridor-Prüfung bietet jetzt - wie der
+allgemeine Aufgabe-gegen-Aufgabe-Fall es schon immer tat - echte "davor ODER danach"-Alternativen
+(`AddBoolOr` statt einer harten Gleichung). Der Wartefenster-Fall selbst bleibt bewusst einseitig:
+dessen Fenster beginnt bei t=0, ein "davor" existiert dort tatsächlich nicht.
+
+Modell-Aufbau dafür in `build_model()` aus `solve_exact()` herausgelöst - eigenständig aufrufbar,
+u.a. um in genau diesem Test gezielt Variablen zu fixieren und die Machbarkeit isoliert zu prüfen,
+ohne den ganzen Lösungsprozess anzustoßen.
+
 ## Laufzeit des exakten Lösers
 
 Nachgemessen (3 Zufallsinstanzen je Zelle, 12s Zeitlimit, `CP-SAT`, inkl. Tie-Breaking-Ziel UND

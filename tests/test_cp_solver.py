@@ -1,9 +1,11 @@
+from ortools.sat.python import cp_model
+
 import pytest
 
-from quaycrane_cp_solver import solve_exact
-from quaycrane_evaluation import build_schedule, check_feasible, evaluate
+from quaycrane_cp_solver import build_model, solve_exact
+from quaycrane_evaluation import Task, build_schedule, check_feasible, evaluate
 from quaycrane_heuristic import balanced_zone_construction, greedy_and_polish, naive_construction
-from quaycrane_scenario import generate_instance
+from quaycrane_scenario import Bay, Instance, generate_instance
 
 SCENARIOS = [
     dict(n_bays=6, n_cranes=1, safety_margin=0, seed=1),
@@ -119,6 +121,56 @@ def test_exact_solution_covers_first_travel_from_start_position():
     assert result.feasible
     ok, violations = check_feasible(instance, result.tasks)
     assert ok, violations
+
+
+def test_first_travel_constraint_accepts_a_safe_schedule():
+    """Regression test for a modeling bug in `_add_travel_non_crossing_constraints`'s handling
+    of a crane's VERY FIRST trip (own finding, 2026-09-04): the travel-margin sub-constraint
+    only offered ONE escape ("the other task starts after our arrival") and justified skipping
+    the other ("that other task can't safely finish before our travel begins either, since it
+    would then collide with our origin-wait window") - but that reasoning only holds when the
+    ORIGIN position itself is also unsafe relative to that task. When the origin is safely far
+    away (only the travel corridor passes close to the other task), "the other task finishes
+    before our travel even starts" is a genuinely safe, but previously unmodeled, alternative.
+
+    Proven by construction here rather than by hoping the solver's own optimization stumbles
+    into the buggy region: fix ALL variables to a hand-built schedule that `check_feasible`
+    (the project's independent, continuous-time source of truth) confirms is completely safe,
+    then check the raw CP-SAT model (via `build_model`, no objective) doesn't call it
+    INFEASIBLE. Before the fix, this exact schedule was rejected."""
+    instance = Instance(
+        n_bays=6, n_cranes=2,
+        bays=tuple(Bay(index=i, moves=5, duration=10.0) for i in range(6)),
+        time_per_move=2.0, travel_time_per_bay=1.0, safety_margin=1,
+        crane_start_positions=(1.5, 4.5),
+    )
+    # Crane 0 travels straight from its start (1.5) to bay 5 - a corridor that passes right by
+    # bay 4, where crane 1 works EARLY and is long done (t=10.5) before crane 0 even departs
+    # (t=10.5) on its own trip to bay 5 (arriving/starting at t=14.0). Crane 0's origin (1.5)
+    # itself stays safely > margin away from bay 4 the whole time - only the travel corridor
+    # was ever at risk, and only up until crane 1 vacates it.
+    tasks = {
+        5: Task(bay=5, crane=0, start=14.0, end=24.0, wait=0.0, departure=10.5),
+        3: Task(bay=3, crane=0, start=26.0, end=36.0, wait=0.0, departure=24.0),
+        2: Task(bay=2, crane=0, start=37.0, end=47.0, wait=0.0, departure=36.0),
+        1: Task(bay=1, crane=0, start=48.0, end=58.0, wait=0.0, departure=47.0),
+        0: Task(bay=0, crane=0, start=59.0, end=69.0, wait=0.0, departure=58.0),
+        4: Task(bay=4, crane=1, start=0.5, end=10.5, wait=0.0, departure=0.0),
+    }
+    ok, violations = check_feasible(instance, tasks)
+    assert ok, violations  # sanity check on the hand-built schedule itself
+
+    model, x, start, end, crane_of, makespan, scaled, horizon = build_model(instance)
+    for bay, t in tasks.items():
+        model.Add(x[bay, t.crane] == 1)
+        model.Add(start[bay] == scaled(t.start))
+        model.Add(end[bay] == scaled(t.end))
+
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+    assert status in (cp_model.OPTIMAL, cp_model.FEASIBLE), (
+        f"model rejected a schedule check_feasible confirms is safe: {solver.StatusName(status)}"
+    )
 
 
 def test_heuristics_stay_feasible_at_extreme_settings():

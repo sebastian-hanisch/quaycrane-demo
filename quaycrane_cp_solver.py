@@ -187,16 +187,28 @@ def _add_travel_non_crossing_constraints(model, instance, n, k, x, start, end, c
                     model.Add(crane_id <= crane_of[kk]).OnlyEnforceIf(crane_gt_k.Not())
 
                 if not margin_ok_travel_right or not margin_ok_travel_left:
+                    # Eigener Fund: frühere Fassung erzwang hier nur "k komplett danach"
+                    # (k_after) - mit der Begründung, k könne ohnehin nicht vorher enden, ohne
+                    # mit dem Wartefenster [0, start[b]-travel0] zu kollidieren. Das stimmt NUR,
+                    # wenn `start_pos` selbst (das Warten) ebenfalls zu nah an `kk` liegt - ist
+                    # `start_pos` aber sicher (margin_ok_wait_* wahr), gilt diese Kollision
+                    # nicht, und "k endet, BEVOR unsere Fahrt beginnt" ist eine echte, bislang
+                    # fehlende Ausweichmöglichkeit (bewiesen per Gegenbeispiel: eine von
+                    # `check_feasible` als sicher bestätigte Lösung wurde vom Solver-Modell ohne
+                    # diese Alternative fälschlich als unzulässig verworfen). Der Wartefall
+                    # selbst bleibt unten separat und unverändert einseitig - DORT beginnt das
+                    # Fenster bei t=0, ein "davor" existiert also tatsächlich nicht.
+                    k_before = model.NewBoolVar(f"kbtr0_{b}_{crane_id}_{kk}")
                     k_after = model.NewBoolVar(f"katr_{b}_{crane_id}_{kk}")
+                    model.Add(end[kk] <= start[b] - travel0).OnlyEnforceIf(k_before)
+                    model.Add(end[kk] > start[b] - travel0).OnlyEnforceIf(k_before.Not())
                     model.Add(start[kk] >= start[b]).OnlyEnforceIf(k_after)
                     model.Add(start[kk] < start[b]).OnlyEnforceIf(k_after.Not())
-                    # Fahrtfenster endet bei start[b] - "k komplett danach" reicht als
-                    # Ausweichmöglichkeit (vorher kann k nicht enden, da es sonst mit dem
-                    # Wartefenster [0, start[b]-travel0] kollidieren würde, siehe unten).
+                    disjoint = [k_before, k_after]
                     if not margin_ok_travel_right:
-                        model.Add(k_after == 1).OnlyEnforceIf([is_first, crane_lt_k])
+                        model.AddBoolOr(disjoint).OnlyEnforceIf([is_first, crane_lt_k])
                     if not margin_ok_travel_left:
-                        model.Add(k_after == 1).OnlyEnforceIf([is_first, crane_gt_k])
+                        model.AddBoolOr(disjoint).OnlyEnforceIf([is_first, crane_gt_k])
 
                 if not margin_ok_wait_right or not margin_ok_wait_left:
                     k_after_wait = model.NewBoolVar(f"kawr_{b}_{crane_id}_{kk}")
@@ -217,31 +229,29 @@ class ExactResult:
     wall_time_ms: float
 
 
-def solve_exact(instance, time_limit_seconds=8, hint_tasks=None):
-    """hint_tasks: optionales bereits bekanntes machbares Schedule (z.B. von einer Heuristik,
-    Format wie `quaycrane_evaluation.build_schedule`s Rückgabe) - als CP-SAT-Hint übergeben, gibt
-    dem Solver sofort einen gültigen Startpunkt statt bei null zu suchen. Wird ab ca. 16+ Bays
-    bei 5 Kränen spürbar wichtig: die Non-Crossing-während-Fahrt-Constraints (siehe oben)
-    machen selbst das reine FINDEN einer ersten zulässigen Lösung merklich schwerer als vorher
-    - ohne Hint fand der Solver für das Preset "Großes Schiff, viele Kräne" (20 Bays, 5 Kräne)
-    manchmal innerhalb der 8s-Zeitschranke gar keine gültige Lösung mehr (Status UNKNOWN statt
-    FEASIBLE), obwohl vor Einführung dieser Constraints zumindest eine brauchbare, wenn auch
-    nicht bewiesen optimale Lösung gefunden wurde. Mit Hint bekommt der Solver diese sofort."""
-    t0 = time.perf_counter()
+def scaled_fn(x):
+    # Eigener Fund: `round()` rundet auch mal AB (u.a. Bankers Rounding bei exakten .5-
+    # Werten, z.B. rundete round(0.25*10)==round(2.5) auf 2 statt 3) - das lässt das
+    # SKALIERTE Modell eine Fahrzeit oder Bearbeitungsdauer für einen Sekundenbruchteil KÜRZER
+    # annehmen, als sie in der stetigen (unskalierten) Welt tatsächlich ist. Bei sehr engem
+    # Sicherheitsabstand reicht genau diese winzige Differenz, damit eine vom Solver als
+    # "optimal und zulässig" gemeldete Lösung nach dem Zurückskalieren die (strengere,
+    # stetige) `check_feasible`-Prüfung knapp verfehlt. Aufrunden statt runden schließt das
+    # aus: das Modell nimmt dann nie eine kürzere Zeit an, als real gebraucht wird - die
+    # winzige Konservativität (< 0.1 min) fällt makespan-seitig nicht ins Gewicht.
+    return math.ceil(x * SCALE - 1e-6)
+
+
+def build_model(instance):
+    """Baut das reine Constraint-Modell (ohne Zielfunktion, Hints oder Solver-Aufruf) - von
+    `solve_exact` genutzt, aber auch eigenständig aufrufbar, u.a. um in Tests gezielt einzelne
+    Variablen auf einen bekannten Zeitplan zu fixieren und die Machbarkeit isoliert zu prüfen
+    (siehe `tests/test_cp_solver.py::test_first_travel_constraint_accepts_a_safe_schedule` für
+    ein konkretes Beispiel, das genau so einen früheren Modellierungsfehler aufgedeckt hat).
+    Gibt `(model, x, start, end, crane_of, makespan, scaled, horizon)` zurück."""
     n, k = instance.n_bays, instance.n_cranes
     model = cp_model.CpModel()
-
-    def scaled(x):
-        # Eigener Fund: `round()` rundet auch mal AB (u.a. Bankers Rounding bei exakten .5-
-        # Werten, z.B. rundete round(0.25*10)==round(2.5) auf 2 statt 3) - das lässt das
-        # SKALIERTE Modell eine Fahrzeit oder Bearbeitungsdauer für einen Sekundenbruchteil KÜRZER
-        # annehmen, als sie in der stetigen (unskalierten) Welt tatsächlich ist. Bei sehr engem
-        # Sicherheitsabstand reicht genau diese winzige Differenz, damit eine vom Solver als
-        # "optimal und zulässig" gemeldete Lösung nach dem Zurückskalieren die (strengere,
-        # stetige) `check_feasible`-Prüfung knapp verfehlt. Aufrunden statt runden schließt das
-        # aus: das Modell nimmt dann nie eine kürzere Zeit an, als real gebraucht wird - die
-        # winzige Konservativität (< 0.1 min) fällt makespan-seitig nicht ins Gewicht.
-        return math.ceil(x * SCALE - 1e-6)
+    scaled = scaled_fn
 
     durations = [scaled(b.duration) for b in instance.bays]
     total_work = sum(durations)
@@ -305,6 +315,22 @@ def solve_exact(instance, time_limit_seconds=8, hint_tasks=None):
 
     makespan = model.NewIntVar(0, horizon, "makespan")
     model.AddMaxEquality(makespan, end)
+    return model, x, start, end, crane_of, makespan, scaled, horizon
+
+
+def solve_exact(instance, time_limit_seconds=8, hint_tasks=None):
+    """hint_tasks: optionales bereits bekanntes machbares Schedule (z.B. von einer Heuristik,
+    Format wie `quaycrane_evaluation.build_schedule`s Rückgabe) - als CP-SAT-Hint übergeben, gibt
+    dem Solver sofort einen gültigen Startpunkt statt bei null zu suchen. Wird ab ca. 16+ Bays
+    bei 5 Kränen spürbar wichtig: die Non-Crossing-während-Fahrt-Constraints (siehe oben)
+    machen selbst das reine FINDEN einer ersten zulässigen Lösung merklich schwerer als vorher
+    - ohne Hint fand der Solver für das Preset "Großes Schiff, viele Kräne" (20 Bays, 5 Kräne)
+    manchmal innerhalb der 8s-Zeitschranke gar keine gültige Lösung mehr (Status UNKNOWN statt
+    FEASIBLE), obwohl vor Einführung dieser Constraints zumindest eine brauchbare, wenn auch
+    nicht bewiesen optimale Lösung gefunden wurde. Mit Hint bekommt der Solver diese sofort."""
+    t0 = time.perf_counter()
+    n, k = instance.n_bays, instance.n_cranes
+    model, x, start, end, crane_of, makespan, scaled, horizon = build_model(instance)
 
     # Lexikografisches Tie-Breaking: unter allen Lösungen mit optimalem Makespan die mit der
     # kleinsten Summe aller Endzeiten waehlen (siehe Docstring oben). tie_break_weight ist eine
