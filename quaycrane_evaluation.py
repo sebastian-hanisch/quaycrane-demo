@@ -383,6 +383,16 @@ def finalize_tasks(instance, raw):
 
 
 def comparison_table(results):
+    """Werte bleiben echte Floats (nicht als String formatiert) - Streamlit bekommt über
+    `COMPARISON_TABLE_COLUMN_CONFIG` (app.py) explizit gesagt, mit fest einer Nachkommastelle
+    zu rendern. Eigener Fund: eine frühere Fassung formatierte hier selbst als String
+    (`f"{x:.1f}"`), aber Streamlits Dataframe-Renderer erkennt zahlenartige Strings und
+    formatiert sie NOCHMAL selbst - dabei fällt bei einem GLATTEN Wert (z.B. 107.0) die ".0"
+    wieder weg, bei einem echten Bruchwert (z.B. 112.5) nicht. In derselben Spalte standen
+    dadurch mal "107", mal "112.5" nebeneinander - uneinheitlich und verwirrend, obwohl beides
+    dieselbe Metrik mit derselben Rundung ist. Erst `column_config.NumberColumn(format="%.1f")`
+    erzwingt zuverlässig dieselbe Anzahl Nachkommastellen wie die App-Kacheln
+    (`app.py`/`quaycrane_ui_panel.py`) und der PDF-Export."""
     import pandas as pd
 
     rows = []
@@ -390,10 +400,10 @@ def comparison_table(results):
         rows.append(
             {
                 "Methode": r["label"],
-                "Liegezeit (min)": round(r["makespan"], 1),
-                "Wartezeit durch Interferenz (min)": round(r["total_wait_time"], 1),
-                "Fahrzeit gesamt (min)": round(r["total_travel_time"], 1),
-                "Lastungleichgewicht (min)": round(r["load_imbalance"], 1),
+                "Liegezeit (min)": r["makespan"],
+                "Wartezeit durch Interferenz (min)": r["total_wait_time"],
+                "Fahrzeit gesamt (min)": r["total_travel_time"],
+                "Lastungleichgewicht (min)": r["load_imbalance"],
             }
         )
     return pd.DataFrame(rows)

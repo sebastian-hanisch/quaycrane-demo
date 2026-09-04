@@ -8,10 +8,10 @@ from quaycrane_visualization import build_crane_load_chart, build_crane_trajecto
 
 def render_crane_panel(prefix, label, instance, result):
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Liegezeit (Makespan)", f"{result['makespan']:.0f} min")
-    m2.metric("Wartezeit (Interferenz)", f"{result['total_wait_time']:.0f} min")
-    m3.metric("Fahrzeit gesamt", f"{result['total_travel_time']:.0f} min")
-    m4.metric("Lastungleichgewicht", f"{result['load_imbalance']:.0f} min")
+    m1.metric("Liegezeit (Makespan)", f"{result['makespan']:.1f} min")
+    m2.metric("Wartezeit (Interferenz)", f"{result['total_wait_time']:.1f} min")
+    m3.metric("Fahrzeit gesamt", f"{result['total_travel_time']:.1f} min")
+    m4.metric("Lastungleichgewicht", f"{result['load_imbalance']:.1f} min")
 
     fig = build_crane_trajectory_chart(instance, result, title=label)
     st.plotly_chart(fig, use_container_width=True, key=f"{prefix}_trajectory")

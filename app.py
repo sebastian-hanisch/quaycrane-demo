@@ -24,6 +24,22 @@ from quaycrane_visualization import build_crane_trajectory_chart, build_makespan
 
 st.set_page_config(page_title="Containerbrücken-Einsatzplanung – Sebastian Hanisch", layout="wide")
 
+# Eine Nachkommastelle für alle vier Minuten-Metriken - dieselbe Genauigkeit wie die App-Kacheln
+# oben, die per-Methode-Tabs (quaycrane_ui_panel.py) und der PDF-Export (quaycrane_pdf_export.py).
+# Ohne explizite `format`-Angabe entscheidet Streamlits Dataframe-Renderer selbst, wie viele
+# Nachkommastellen es zeigt - bei einem glatten Wert (z.B. 107.0) fällt die ".0" weg, bei einem
+# echten Bruchwert (z.B. 112.5) nicht, wodurch dieselbe Spalte uneinheitlich aussieht (eigener
+# Fund).
+COMPARISON_TABLE_COLUMN_CONFIG = {
+    col: st.column_config.NumberColumn(format="%.1f")
+    for col in (
+        "Liegezeit (min)",
+        "Wartezeit durch Interferenz (min)",
+        "Fahrzeit gesamt (min)",
+        "Lastungleichgewicht (min)",
+    )
+}
+
 
 def _schedule_or_exact_fallback(instance, order):
     """`build_schedule_robust` deckt fast alle Fälle ab, in denen EINE der drei Konstruktionen
@@ -249,17 +265,17 @@ st.caption(f"Methode: **{best['label']}** - wird bei jedem Lauf neu anhand der L
 m1, m2, m3, m4 = st.columns(4)
 m1.metric(
     "Liegezeit (Makespan)",
-    f"{best['makespan']:.0f} min",
-    delta=f"-{time_saved:.0f} min ggü. {baseline['label']}",
+    f"{best['makespan']:.1f} min",
+    delta=f"-{time_saved:.1f} min ggü. {baseline['label']}",
     delta_color="inverse",
 )
-m2.metric("Wartezeit durch Interferenz", f"{best['total_wait_time']:.0f} min")
-m3.metric("Fahrzeit gesamt", f"{best['total_travel_time']:.0f} min")
-m4.metric("Lastungleichgewicht", f"{best['load_imbalance']:.0f} min")
+m2.metric("Wartezeit durch Interferenz", f"{best['total_wait_time']:.1f} min")
+m3.metric("Fahrzeit gesamt", f"{best['total_travel_time']:.1f} min")
+m4.metric("Lastungleichgewicht", f"{best['load_imbalance']:.1f} min")
 
 if time_saved > 1:
     st.success(
-        f"⏱️ **{best['label']}** spart hier ca. **{time_saved:.0f} min** ({pct_saved:.1f}%) "
+        f"⏱️ **{best['label']}** spart hier ca. **{time_saved:.1f} min** ({pct_saved:.1f}%) "
         f"Liegezeit gegenüber '{baseline['label']}'."
     )
 
@@ -273,13 +289,13 @@ if exact_result is not None:
             st.info(
                 f"✅ Exakter Referenzlöser (OR-Tools, optimal gelöst, "
                 f"{exact_result['wall_time_ms']:.0f} ms): **{best['label']}** erreicht bereits "
-                f"das Optimum ({exact_eval['makespan']:.0f} min)."
+                f"das Optimum ({exact_eval['makespan']:.1f} min)."
             )
         else:
             st.info(
                 f"📐 Exakter Referenzlöser (OR-Tools, optimal gelöst, "
                 f"{exact_result['wall_time_ms']:.0f} ms): Optimum liegt bei "
-                f"{exact_eval['makespan']:.0f} min - Lücke zur besten Heuristik: {gap:.0f} min "
+                f"{exact_eval['makespan']:.1f} min - Lücke zur besten Heuristik: {gap:.1f} min "
                 f"({gap_pct:.1f}%)."
             )
     else:
@@ -287,15 +303,15 @@ if exact_result is not None:
             st.warning(
                 f"⏱️ Exakter Referenzlöser (OR-Tools, Zeitlimit erreicht, kein Optimalitäts-"
                 f"beweis, {exact_result['wall_time_ms']:.0f} ms): **{best['label']}** "
-                f"({best['makespan']:.0f} min) erreicht oder unterbietet sogar die beste vom "
-                f"Solver gefundene Lösung ({exact_eval['makespan']:.0f} min) - das tatsächliche "
+                f"({best['makespan']:.1f} min) erreicht oder unterbietet sogar die beste vom "
+                f"Solver gefundene Lösung ({exact_eval['makespan']:.1f} min) - das tatsächliche "
                 f"Optimum könnte noch darunter liegen."
             )
         else:
             st.warning(
                 f"⏱️ Exakter Referenzlöser (OR-Tools, Zeitlimit erreicht, kein Optimalitäts-"
                 f"beweis, {exact_result['wall_time_ms']:.0f} ms): beste bislang gefundene "
-                f"Lösung liegt bei {exact_eval['makespan']:.0f} min - {gap:.0f} min ({gap_pct:.1f}%) "
+                f"Lösung liegt bei {exact_eval['makespan']:.1f} min - {gap:.1f} min ({gap_pct:.1f}%) "
                 f"unter der besten Heuristik, aber ohne Optimalitätsgarantie."
             )
 elif exact_stale:
@@ -369,17 +385,17 @@ elif alt_cranes >= 1:
     delta_makespan = alt_hook["makespan"] - current_hook["makespan"]
 
     core_col1, core_col2, core_col3 = st.columns(3)
-    core_col1.metric(f"{n_cranes} Kräne (aktuell)", f"{current_hook['makespan']:.0f} min")
+    core_col1.metric(f"{n_cranes} Kräne (aktuell)", f"{current_hook['makespan']:.1f} min")
     core_col2.metric(
         f"{alt_cranes} Kräne",
-        f"{alt_hook['makespan']:.0f} min",
-        delta=f"{delta_makespan:.0f} min ggü. {n_cranes} Kränen",
+        f"{alt_hook['makespan']:.1f} min",
+        delta=f"{delta_makespan:.1f} min ggü. {n_cranes} Kränen",
         delta_color="inverse",
     )
     core_col3.metric(
         f"Wartezeit bei {alt_cranes} Kränen",
-        f"{alt_hook['total_wait_time']:.0f} min",
-        delta=f"{alt_hook['total_wait_time'] - current_hook['total_wait_time']:.0f} min ggü. {n_cranes} Kränen",
+        f"{alt_hook['total_wait_time']:.1f} min",
+        delta=f"{alt_hook['total_wait_time'] - current_hook['total_wait_time']:.1f} min ggü. {n_cranes} Kränen",
         delta_color="inverse",
     )
 
@@ -387,7 +403,7 @@ elif alt_cranes >= 1:
         if delta_makespan < -1:
             st.success(
                 f"✅ Ein zusätzlicher Kran ({n_cranes} → {alt_cranes}) lohnt sich hier klar: "
-                f"**{-delta_makespan:.0f} min** kürzere Liegezeit."
+                f"**{-delta_makespan:.1f} min** kürzere Liegezeit."
             )
         elif delta_makespan > -1 and delta_makespan < 1:
             st.warning(
@@ -397,20 +413,20 @@ elif alt_cranes >= 1:
             )
         else:
             st.error(
-                f"🚫 Ein zusätzlicher Kran macht es hier sogar **{delta_makespan:.0f} min "
+                f"🚫 Ein zusätzlicher Kran macht es hier sogar **{delta_makespan:.1f} min "
                 f"langsamer** - bei diesem Sicherheitsabstand und dieser Schiffslänge steht sich "
                 f"der zusätzliche Kran selbst im Weg."
             )
     else:
         if delta_makespan > 1:
             st.info(
-                f"ℹ️ Mit {n_cranes - 1} statt {n_cranes} Kränen wäre das Schiff **{delta_makespan:.0f} min** "
+                f"ℹ️ Mit {n_cranes - 1} statt {n_cranes} Kränen wäre das Schiff **{delta_makespan:.1f} min** "
                 f"langsamer fertig - der letzte Kran lohnt sich hier noch."
             )
         else:
             st.warning(
                 f"⚠️ Der letzte (fünfte) Kran bringt kaum noch etwas: mit {n_cranes - 1} Kränen "
-                f"wäre die Liegezeit nur {-delta_makespan:.0f} min länger."
+                f"wäre die Liegezeit nur {-delta_makespan:.1f} min länger."
             )
 else:
     st.info("Bei nur einem Kran gibt es keine Interferenz zu vergleichen - erhöhen Sie die Kranzahl im Regler links.")
@@ -422,7 +438,12 @@ with st.expander("🔧 Wie wir das erreichen – vollständiger Methodenvergleic
     if exact_result is not None:
         all_results.append(exact_result["eval"])
 
-    st.dataframe(comparison_table(all_results), use_container_width=True, hide_index=True)
+    st.dataframe(
+        comparison_table(all_results),
+        use_container_width=True,
+        hide_index=True,
+        column_config=COMPARISON_TABLE_COLUMN_CONFIG,
+    )
     st.plotly_chart(build_makespan_comparison_chart(all_results), use_container_width=True)
 
     prefixes = ["naive", "zone", "polish", "exact"]

@@ -341,6 +341,30 @@ gültigen Startpunkt statt bei null zu suchen. `EXACT_SOLVE_TIME_LIMIT_SECONDS` 
 8 auf 12s angehoben, weil selbst mit Hint die reine *Bestätigung* der Zulässigkeit bei 20
 Bays/5 Kränen noch zuverlässig über 8s brauchte.
 
+## Fund: dieselbe Minuten-Metrik zeigte an verschiedenen Stellen unterschiedlich viele Nachkommastellen
+
+Nutzer-Feedback: die Zahlen wirkten an unterschiedlichen Stellen der App inkonsistent. Ursache
+waren zwei separate Probleme mit derselben Symptomatik:
+
+1. **Formatierung.** Die Kopf-Kacheln ("Ihr kürzester Kranplan", "Lohnt sich ein zusätzlicher
+   Kran?") und die Pro-Methode-Tabs rundeten Liegezeit/Wartezeit/Fahrzeit/Lastungleichgewicht
+   mit `.0f` (ganze Minuten), während die Vergleichstabelle (`comparison_table()`) und der
+   PDF-Export dieselben Werte mit `.1f` zeigten - je nachdem, wo man hinschaute, stand für
+   dasselbe Ergebnis "107 min" oder "106,8 min". Fix: alle vier Stellen einheitlich auf `.1f`
+   gebracht (`app.py`, [quaycrane_ui_panel.py](quaycrane_ui_panel.py)) - eine Nachkommastelle,
+   weil Bearbeitungsdauern und Fahrzeiten im Modell selbst genuin gebrochene Werte annehmen
+   (Moves × Zeit/Move, Bay-Abstand × Kranfahrzeit), keine künstliche Scheingenauigkeit.
+2. **Tieferliegend, erst danach entdeckt:** selbst NACH dem Fix auf `.1f` zeigte die
+   Vergleichstabelle weiterhin uneinheitlich viele Nachkommastellen - "112,5" neben "107" in
+   derselben Spalte. Grund: `comparison_table()` gab die Werte als Python-Floats (`round(x, 1)`)
+   zurück und überließ Streamlits Dataframe-Renderer die Formatierung - bei einem GLATTEN Wert
+   (107.0) fällt die ".0" beim Rendern weg, bei einem echten Bruchwert (112.5) nicht. Ein
+   Zwischenversuch, die Werte selbst als String zu formatieren (`f"{x:.1f}"`), half NICHT:
+   Streamlit erkennt zahlenartige Strings und formatiert sie nochmal selbst, mit demselben
+   Effekt. Erst `st.column_config.NumberColumn(format="%.1f")` (in `app.py`, als
+   `COMPARISON_TABLE_COLUMN_CONFIG` an den `st.dataframe()`-Aufruf übergeben) erzwingt
+   zuverlässig dieselbe Nachkommastellenzahl in jeder Zelle.
+
 ## Dateistruktur
 
 | Datei | Inhalt |
