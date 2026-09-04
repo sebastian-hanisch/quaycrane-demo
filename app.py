@@ -44,13 +44,13 @@ def _schedule_or_exact_fallback(instance, order):
 
 
 @st.cache_data(show_spinner=False)
-def _compute_all(n_bays, n_cranes, moves_avg, moves_variability, time_per_move, travel_time_per_bay,
-                  safety_margin, seed, run_exact):
+def _compute_heuristics(n_bays, n_cranes, moves_avg, moves_variability, time_per_move, travel_time_per_bay,
+                         safety_margin, seed):
     instance = generate_instance(
         n_bays, n_cranes, moves_avg, moves_variability, time_per_move, travel_time_per_bay, safety_margin, seed
     )
     if instance.is_trivially_infeasible():
-        return instance, None, None
+        return instance, None
 
     try:
         polish_tasks = _schedule_or_exact_fallback(instance, greedy_and_polish(instance, seed=seed))
@@ -70,20 +70,29 @@ def _compute_all(n_bays, n_cranes, moves_avg, moves_variability, time_per_move, 
         # zulässige Lösung (nicht dasselbe wie "bewiesen unlösbar" - siehe
         # `Instance.is_trivially_infeasible` für den einzigen Fall, der das WÄRE). Wie der
         # trivial-unlösbare Fall behandelt, statt die App abstürzen zu lassen.
-        return instance, None, None
+        return instance, None
 
-    exact_result = None
-    if run_exact:
-        # polish_tasks als Hint: gibt CP-SAT sofort einen gültigen Startpunkt, statt bei null
-        # zu suchen - wird ab ca. 16+ Bays bei 5 Kränen spürbar wichtig (siehe
-        # quaycrane_cp_solver.solve_exact-Docstring).
-        solve = solve_exact(instance, time_limit_seconds=C.EXACT_SOLVE_TIME_LIMIT_SECONDS, hint_tasks=polish_tasks)
-        if solve.feasible:
-            exact_label = "Exakt (OR-Tools)" if solve.optimal else "Exakt (OR-Tools, Zeitlimit)"
-            exact_eval = evaluate(instance, solve.tasks, label=exact_label)
-            exact_result = {"eval": exact_eval, "optimal": solve.optimal, "wall_time_ms": solve.wall_time_ms}
+    return instance, results
 
-    return instance, results, exact_result
+
+@st.cache_data(show_spinner=False)
+def _compute_exact(n_bays, n_cranes, moves_avg, moves_variability, time_per_move, travel_time_per_bay,
+                    safety_margin, seed, hint_tasks):
+    """Getrennt von `_compute_heuristics`, damit der exakte Löser NICHT automatisch bei jeder
+    Regler-Änderung mitläuft (eigener Fund: bei größeren Szenarien braucht er mehrere Sekunden,
+    das bremste bislang jede Interaktion aus) - wird nur aufgerufen, wenn der Nutzer explizit den
+    Button klickt (siehe unten). `hint_tasks` (die beste Heuristik-Lösung) gibt CP-SAT sofort
+    einen gültigen Startpunkt, statt bei null zu suchen - wird ab ca. 16+ Bays bei 5 Kränen
+    spürbar wichtig (siehe quaycrane_cp_solver.solve_exact-Docstring)."""
+    instance = generate_instance(
+        n_bays, n_cranes, moves_avg, moves_variability, time_per_move, travel_time_per_bay, safety_margin, seed
+    )
+    solve = solve_exact(instance, time_limit_seconds=C.EXACT_SOLVE_TIME_LIMIT_SECONDS, hint_tasks=hint_tasks)
+    if not solve.feasible:
+        return None
+    exact_label = "Exakt (OR-Tools)" if solve.optimal else "Exakt (OR-Tools, Zeitlimit)"
+    exact_eval = evaluate(instance, solve.tasks, label=exact_label)
+    return {"eval": exact_eval, "optimal": solve.optimal, "wall_time_ms": solve.wall_time_ms}
 
 
 @st.cache_data(show_spinner=False)
@@ -164,13 +173,14 @@ with st.sidebar:
     )
 
     st.markdown("**Referenz**")
-    run_exact = st.checkbox(
-        "Exakte Lösung berechnen (OR-Tools CP-SAT)",
-        value=True,
+    run_exact_clicked = st.button(
+        "🎯 Exakte Lösung berechnen (OR-Tools CP-SAT)",
+        use_container_width=True,
         help="Löst das vollständige Scheduling-Modell exakt - dient als Cross-Check für die "
         f"Heuristiken. Auf {C.EXACT_SOLVE_TIME_LIMIT_SECONDS}s begrenzt (bei vielen Bays/Kränen "
         "manchmal nur die beste gefundene, nicht bewiesen optimale Lösung - wird dann so "
-        "gekennzeichnet).",
+        "gekennzeichnet). Läuft bewusst nur auf Klick, nicht automatisch bei jeder Änderung - "
+        "kann bei großen Szenarien mehrere Sekunden dauern.",
     )
 
     st.button(
@@ -184,11 +194,13 @@ sync_query_params(
     n_bays, n_cranes, moves_avg, moves_variability, time_per_move, travel_time_per_bay, safety_margin, seed
 )
 
+scenario_key = (
+    int(n_bays), int(n_cranes), int(moves_avg), moves_variability, time_per_move,
+    travel_time_per_bay, int(safety_margin), int(seed),
+)
+
 with st.spinner("Berechne Kranplan..."):
-    instance, results, exact_result = _compute_all(
-        int(n_bays), int(n_cranes), int(moves_avg), moves_variability, time_per_move,
-        travel_time_per_bay, int(safety_margin), int(seed), run_exact,
-    )
+    instance, results = _compute_heuristics(*scenario_key)
 
 if results is None:
     if instance.is_trivially_infeasible():
@@ -215,6 +227,21 @@ best = min(results, key=lambda r: r["makespan"])
 baseline = max(results, key=lambda r: r["makespan"])
 time_saved = baseline["makespan"] - best["makespan"]
 pct_saved = (time_saved / baseline["makespan"] * 100) if baseline["makespan"] > 0 else 0.0
+
+if run_exact_clicked:
+    st.session_state["exact_scenario_key"] = scenario_key
+
+exact_result = None
+exact_stale = False
+if st.session_state.get("exact_scenario_key") == scenario_key:
+    polish_tasks = results[2]["tasks"]  # "Greedy + lokale Suche" - dient CP-SAT als Hint
+    with st.spinner(f"Berechne exakte Lösung (OR-Tools CP-SAT, bis zu {C.EXACT_SOLVE_TIME_LIMIT_SECONDS}s)..."):
+        exact_result = _compute_exact(*scenario_key, polish_tasks)
+elif "exact_scenario_key" in st.session_state:
+    # Einstellungen haben sich seit der letzten exakten Berechnung geändert - die alte Lösung
+    # gehört zu einem anderen Szenario und wird bewusst NICHT mehr angezeigt, statt irreführend
+    # stehen zu bleiben.
+    exact_stale = True
 
 st.markdown("## 🎯 Ihr kürzester Kranplan")
 st.caption(f"Methode: **{best['label']}** - wird bei jedem Lauf neu anhand der Liegezeit bestimmt.")
@@ -271,6 +298,17 @@ if exact_result is not None:
                 f"Lösung liegt bei {exact_eval['makespan']:.0f} min - {gap:.0f} min ({gap_pct:.1f}%) "
                 f"unter der besten Heuristik, aber ohne Optimalitätsgarantie."
             )
+elif exact_stale:
+    st.info(
+        "ℹ️ Die zuletzt berechnete exakte Lösung bezog sich auf ein anderes Szenario - "
+        "Einstellungen links geändert? Erneut auf '🎯 Exakte Lösung berechnen' klicken, um sie "
+        "für die aktuelle Konfiguration zu erhalten."
+    )
+else:
+    st.caption(
+        "💡 Exaktes Optimum als Cross-Check sehen? Button '🎯 Exakte Lösung berechnen' in der "
+        "Seitenleiste - läuft nur auf Klick, da es bei großen Szenarien einige Sekunden dauern kann."
+    )
 
 fig_best = build_crane_trajectory_chart(instance, best, title=best["label"])
 st.plotly_chart(fig_best, use_container_width=True, key="primary_trajectory")

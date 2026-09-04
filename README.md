@@ -55,10 +55,13 @@ Formale Herleitung im Expander "📐 Mathematische Formulierung" der App.
   Listenscheduling, Positions-Listenscheduling) und verbessert iterativ per Kran-Tausch und
   Kran-Verlagerung einzelner Bays – nachweislich nie schlechter als der Startpunkt.
 - **Exakt** (Google OR-Tools CP-SAT): löst das vollständige Scheduling-Modell exakt – Referenz
-  und Cross-Check für die drei Heuristiken.
+  und Cross-Check für die drei Heuristiken. Läuft bewusst nur auf Klick (Button in der
+  Seitenleiste), nicht automatisch bei jeder Regler-Änderung mit – bei größeren Szenarien kann
+  das mehrere Sekunden dauern, während die drei Heuristiken durchweg unter einer Millisekunde
+  brauchen (siehe Performance-Fund weiter unten).
 
 Die Primäransicht zeigt **dynamisch** die bei den aktuellen Reglereinstellungen tatsächlich
-schnellste Methode – keine wird pauschal bevorzugt.
+schnellste Methode (unter den drei Heuristiken) – keine wird pauschal bevorzugt.
 
 ## Fund: naives Listenscheduling nach Arbeitslast (LPT) verliert gegen die naive Baseline
 
@@ -291,6 +294,22 @@ dessen Fenster beginnt bei t=0, ein "davor" existiert dort tatsächlich nicht.
 Modell-Aufbau dafür in `build_model()` aus `solve_exact()` herausgelöst - eigenständig aufrufbar,
 u.a. um in genau diesem Test gezielt Variablen zu fixieren und die Machbarkeit isoliert zu prüfen,
 ohne den ganzen Lösungsprozess anzustoßen.
+
+## Fund: der exakte Löser lief automatisch mit und bremste jede Regler-Änderung aus
+
+Ursprünglich lief `solve_exact` bei JEDER Änderung an den Reglern automatisch mit (Checkbox
+"Exakte Lösung berechnen", standardmäßig aktiviert) - bei größeren Szenarien (viele Bays/Kräne)
+kostete das mehrere Sekunden pro Interaktion, obwohl die drei eigenen Heuristiken zusammen unter
+einer Millisekunde brauchen (siehe Performance-Fund oben). Da CP-SAT nur als Cross-Check dient,
+nicht für das primäre Ergebnis gebraucht wird, ist automatisches Mitlaufen unnötig teuer.
+
+Fix in [app.py](app.py): `_compute_all` in `_compute_heuristics` (läuft immer, schnell) und
+`_compute_exact` (eigenständig `@st.cache_data`, läuft nur auf Klick) aufgeteilt. Ein Button
+"🎯 Exakte Lösung berechnen" in der Seitenleiste ersetzt die Checkbox; das Ergebnis wird über
+`st.session_state` an ein konkretes Szenario (Regler-Kombination) gebunden - ändert sich die
+Konfiguration danach, wird die alte exakte Lösung NICHT mehr angezeigt (sie gehörte zu einem
+anderen Schiff), sondern ein Hinweis, erneut zu klicken. Mehrfaches Klicken für dasselbe
+Szenario trifft dank `@st.cache_data` sofort den Cache, kein wiederholtes Lösen.
 
 ## Laufzeit des exakten Lösers
 
