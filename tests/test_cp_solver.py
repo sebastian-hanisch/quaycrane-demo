@@ -54,14 +54,20 @@ def test_exact_solution_has_no_spurious_wait():
     same instance repeatedly and finding the reported wait time varied between 0.0 and 1.1
     minutes while the makespan stayed the same optimal value every time). Regression test for
     the fix: solve several times, the makespan must stay optimal and the wait time must stay
-    at (numerically) zero every time."""
+    at (numerically) zero every time.
+
+    Time limit generous (not the usual few seconds): CI runners have far fewer cores than a
+    typical dev machine, and CP-SAT's parallel search needs real wall-clock time per worker to
+    close the optimality gap, not just to find a good solution (own finding: this instance
+    reliably proves optimal in ~14s with 2 search workers, matching a 2-vCPU CI runner - see
+    `NUM_SEARCH_WORKERS` in quaycrane_cp_solver.py)."""
     instance = generate_instance(
         n_bays=12, n_cranes=3, moves_avg=14, moves_variability=0.4, time_per_move=2.0,
         travel_time_per_bay=0.5, safety_margin=1, seed=7,
     )
     makespans = set()
     for _ in range(5):
-        result = solve_exact(instance, time_limit_seconds=10)
+        result = solve_exact(instance, time_limit_seconds=25)
         assert result.optimal
         ok, violations = check_feasible(instance, result.tasks)
         assert ok, violations
@@ -82,13 +88,14 @@ def test_exact_solution_never_crosses_during_travel():
     t=77.5, the exact moment crane 0 was still standing there. Regression test for the fix
     (_add_travel_non_crossing_constraints in quaycrane_cp_solver.py): check_feasible's
     segment-based crossing check (which itself models travel, not just task intervals) must
-    pass on the exact preset parameters that exposed the bug."""
+    pass on the exact preset parameters that exposed the bug. Time limit generous for the same
+    CI-hardware reason as `test_exact_solution_has_no_spurious_wait` above."""
     instance = generate_instance(
         n_bays=12, n_cranes=3, moves_avg=14, moves_variability=0.4, time_per_move=2.0,
         travel_time_per_bay=0.5, safety_margin=1, seed=7,
     )
     for _ in range(3):
-        result = solve_exact(instance, time_limit_seconds=10)
+        result = solve_exact(instance, time_limit_seconds=25)
         assert result.optimal
         ok, violations = check_feasible(instance, result.tasks)
         assert ok, violations
@@ -100,13 +107,15 @@ def test_exact_solution_covers_first_travel_from_start_position():
     by the first pass of the fix, which only linked immediately-consecutive TASK pairs.
     Reproduced on the "Großes Schiff, viele Kräne" preset (20 bays, 5 cranes): crane 3's first
     trip (start position 14.0 -> bay 5) crossed crane 2's first trip (start position 10.0 ->
-    bay 13) during their overlapping initial travel windows."""
+    bay 13) during their overlapping initial travel windows. Time limit generous for the same
+    CI-hardware reason as the tests above (this one only needs `feasible`, not `optimal`, but
+    even reaching feasibility takes longer with fewer real search workers)."""
     instance = generate_instance(
         n_bays=20, n_cranes=5, moves_avg=16, moves_variability=0.4, time_per_move=2.0,
         travel_time_per_bay=0.5, safety_margin=1, seed=11,
     )
     hint = build_schedule(instance, greedy_and_polish(instance, seed=11))
-    result = solve_exact(instance, time_limit_seconds=15, hint_tasks=hint)
+    result = solve_exact(instance, time_limit_seconds=25, hint_tasks=hint)
     assert result.feasible
     ok, violations = check_feasible(instance, result.tasks)
     assert ok, violations

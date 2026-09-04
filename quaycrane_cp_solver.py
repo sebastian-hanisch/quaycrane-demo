@@ -29,6 +29,7 @@ wartezeitfreie Lösung mit demselben Makespan existiert. Das zweite Ziel drückt
 früh wie möglich, ohne den Makespan zu verschlechtern, und eliminiert solche Artefakte."""
 
 import math
+import os
 import time
 from dataclasses import dataclass
 
@@ -37,6 +38,13 @@ from ortools.sat.python import cp_model
 from quaycrane_evaluation import finalize_tasks
 
 SCALE = 10  # interne Zeitauflösung: 1 CP-SAT-Einheit = 0.1 Minuten
+
+# Eigener Fund: fest auf 8 verdrahtet lief hier lokal gut, ließ aber die CI (GitHub-gehostete
+# Runner, nur 2 vCPUs) innerhalb der Zeitlimits nicht mehr fertig werden bzw. nicht mehr
+# beweisbar optimal lösen - 8 Suchpfade auf 2 echten Kernen konkurrieren nur noch um Kontext-
+# Wechsel, statt zu parallelisieren. `os.cpu_count()` (mit Fallback 1, falls nicht ermittelbar)
+# passt das automatisch an die tatsächliche Hardware an, statt eine feste Dev-Maschine anzunehmen.
+NUM_SEARCH_WORKERS = min(8, os.cpu_count() or 1)
 
 
 def _add_travel_non_crossing_constraints(model, instance, n, k, x, start, end, crane_of, pair_same, pair_before, scaled):
@@ -317,7 +325,7 @@ def solve_exact(instance, time_limit_seconds=8, hint_tasks=None):
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit_seconds
-    solver.parameters.num_search_workers = 8
+    solver.parameters.num_search_workers = NUM_SEARCH_WORKERS
     status = solver.Solve(model)
     wall_time_ms = (time.perf_counter() - t0) * 1000
 
