@@ -34,7 +34,15 @@ def test_exact_solution_feasible_and_is_lower_bound(params):
     heuristic_makespan = max(t.end for t in heuristic_tasks.values())
 
     if result.optimal:
-        assert result.makespan <= heuristic_makespan + 1e-6
+        # Toleranz statt 1e-6: `quaycrane_cp_solver.scaled()` rundet Zeiten bewusst AUF (nicht
+        # zum naechsten Wert) - vermeidet, dass das skalierte Modell eine Fahrzeit/Dauer je
+        # knapp zu kurz annimmt und dadurch eine "optimale" Loesung meldet, die nach dem
+        # Zurueckskalieren die (strengere) stetige check_feasible-Pruefung verfehlt (siehe
+        # scaled()-Docstring). Preis dafuer: das gemeldete Optimum kann um bis zu einer
+        # SCALE-Einheit (0.1 min) pessimistischer sein als das wahre stetige Optimum, das eine
+        # Heuristik zufaellig treffen kann - Sicherheit vor Zulaessigkeit geht hier bewusst vor
+        # Millisekunden-genauer Optimalitaet.
+        assert result.makespan <= heuristic_makespan + 0.15
 
 
 def test_exact_solution_has_no_spurious_wait():
@@ -104,37 +112,22 @@ def test_exact_solution_covers_first_travel_from_start_position():
     assert ok, violations
 
 
-def test_exact_stays_feasible_where_heuristics_can_fail():
-    """Known, documented limitation (see earliest_feasible_start's docstring in
-    quaycrane_evaluation.py): the heuristics' simple "wait at last known position" idle
-    convention can't always guarantee margin-safety during a VERY long forced wait in extreme
-    settings (max safety margin + max crane count on a short ship) - the idling crane's only
-    two candidate positions (where it just finished, or where it's headed next) can both be
-    too close to a neighboring crane's work at some point during a long wait, and a genuinely
-    safe third position isn't searched for. The exact solver has no such gap: it never commits
-    to an explicit idle position in the first place, so it remains fully feasible even here.
-    This test documents and locks in that asymmetry rather than silently avoiding the scenario."""
+def test_heuristics_stay_feasible_at_extreme_settings():
+    """Regression test for a since-fixed limitation: at this exact scenario (maximum safety
+    margin, 5 cranes, an 18-bay ship, seed=5) the heuristics' construction used to produce a
+    genuine margin violation during a very long forced wait - `earliest_feasible_start`'s
+    "wait at last known position" idle convention couldn't guarantee safety there, and
+    `build_schedule`'s old safety-net fallback (`_fully_sequential_schedule`) inherited the same
+    gap instead of closing it. Fixed by making that fallback construct via an exhaustive,
+    per-insertion VERIFIED breakpoint search (see `_safe_breakpoint_departure`'s docstring in
+    quaycrane_evaluation.py) instead of trusting a single "safe" formula. All three heuristics
+    must now be feasible here too, matching the exact solver (see
+    `test_exact_solution_never_crosses_during_travel` and friends above)."""
     instance = generate_instance(
         n_bays=18, n_cranes=5, moves_avg=12, moves_variability=0.4, time_per_move=2.0,
         travel_time_per_bay=0.5, safety_margin=3, seed=5,
     )
-    # Hint bewusst von der (in diesem Szenario selbst nicht ganz zulässigen) Naive-Konstruktion
-    # statt einer polierten Heuristik: CP-SAT behandelt Hints nur als Suchempfehlung, nicht als
-    # harte Vorgabe - auch ein teils inkonsistenter Hint hilft dem Solver i.d.R. noch, schneller
-    # eine erste echte Lösung zu finden, als komplett bei null zu starten.
-    hint = build_schedule(instance, naive_construction(instance))
-    result = solve_exact(instance, time_limit_seconds=15, hint_tasks=hint)
-    assert result.feasible
-    ok, violations = check_feasible(instance, result.tasks)
-    assert ok, violations
-
-    heuristic_violation_found = False
     for order in [naive_construction(instance), balanced_zone_construction(instance), greedy_and_polish(instance)]:
         tasks = build_schedule(instance, order)
-        ok, _ = check_feasible(instance, tasks)
-        if not ok:
-            heuristic_violation_found = True
-    assert heuristic_violation_found, (
-        "this scenario was chosen specifically because a heuristic fails it - if none fail "
-        "anymore, the underlying limitation may be fixed and this test's premise is outdated"
-    )
+        ok, violations = check_feasible(instance, tasks)
+        assert ok, violations

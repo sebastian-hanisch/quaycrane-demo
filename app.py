@@ -2,8 +2,13 @@ import streamlit as st
 
 import quaycrane_constants as C
 from quaycrane_cp_solver import solve_exact
-from quaycrane_evaluation import build_schedule, comparison_table, evaluate
-from quaycrane_heuristic import balanced_zone_construction, greedy_and_polish, naive_construction
+from quaycrane_evaluation import ScheduleInfeasibleError, comparison_table, evaluate
+from quaycrane_heuristic import (
+    balanced_zone_construction,
+    build_schedule_robust,
+    greedy_and_polish,
+    naive_construction,
+)
 from quaycrane_pdf_export import generate_crane_plan_pdf
 from quaycrane_presets import (
     apply_preset,
@@ -20,19 +25,52 @@ from quaycrane_visualization import build_crane_trajectory_chart, build_makespan
 st.set_page_config(page_title="Containerbrücken-Einsatzplanung – Sebastian Hanisch", layout="wide")
 
 
+def _schedule_or_exact_fallback(instance, order):
+    """`build_schedule_robust` deckt fast alle Fälle ab, in denen EINE der drei Konstruktionen
+    eine strukturell unschedulierbare Kranzuordnung erzeugt (siehe deren Docstring) - in extrem
+    engen Szenarien (Kran-Startabstand nur knapp über dem Sicherheitsabstand, siehe
+    `Instance.is_trivially_infeasible` für die noch engeren, GAR nicht lösbaren Fälle) kann
+    aber auch keine der drei eigenen Konstruktionen mehr eine zulässige Kranzuordnung finden,
+    obwohl das Szenario selbst durchaus lösbar ist. Letzter Ausweg dann: der exakte CP-SAT-Löser
+    - der committet sich nie auf eine explizite Warteposition (siehe quaycrane_cp_solver.py) und
+    hat deshalb genau diese Klasse von Problem grundsätzlich nicht."""
+    try:
+        return build_schedule_robust(instance, order)
+    except ScheduleInfeasibleError:
+        solve = solve_exact(instance, time_limit_seconds=C.EXACT_SOLVE_TIME_LIMIT_SECONDS)
+        if solve.feasible:
+            return solve.tasks
+        raise
+
+
 @st.cache_data(show_spinner=False)
 def _compute_all(n_bays, n_cranes, moves_avg, moves_variability, time_per_move, travel_time_per_bay,
                   safety_margin, seed, run_exact):
     instance = generate_instance(
         n_bays, n_cranes, moves_avg, moves_variability, time_per_move, travel_time_per_bay, safety_margin, seed
     )
+    if instance.is_trivially_infeasible():
+        return instance, None, None
 
-    polish_tasks = build_schedule(instance, greedy_and_polish(instance, seed=seed))
-    results = [
-        evaluate(instance, build_schedule(instance, naive_construction(instance)), label="Naive (gleichmäßige Aufteilung)"),
-        evaluate(instance, build_schedule(instance, balanced_zone_construction(instance)), label="Greedy (Zonenbalance)"),
-        evaluate(instance, polish_tasks, label="Greedy + lokale Suche"),
-    ]
+    try:
+        polish_tasks = _schedule_or_exact_fallback(instance, greedy_and_polish(instance, seed=seed))
+        results = [
+            evaluate(
+                instance, _schedule_or_exact_fallback(instance, naive_construction(instance)),
+                label="Naive (gleichmäßige Aufteilung)",
+            ),
+            evaluate(
+                instance, _schedule_or_exact_fallback(instance, balanced_zone_construction(instance)),
+                label="Greedy (Zonenbalance)",
+            ),
+            evaluate(instance, polish_tasks, label="Greedy + lokale Suche"),
+        ]
+    except ScheduleInfeasibleError:
+        # Extrem seltener Randfall: selbst der exakte Löser findet innerhalb des Zeitlimits keine
+        # zulässige Lösung (nicht dasselbe wie "bewiesen unlösbar" - siehe
+        # `Instance.is_trivially_infeasible` für den einzigen Fall, der das WÄRE). Wie der
+        # trivial-unlösbare Fall behandelt, statt die App abstürzen zu lassen.
+        return instance, None, None
 
     exact_result = None
     if run_exact:
@@ -54,7 +92,12 @@ def _best_makespan_for_crane_count(n_bays, n_cranes, moves_avg, moves_variabilit
     instance = generate_instance(
         n_bays, n_cranes, moves_avg, moves_variability, time_per_move, travel_time_per_bay, safety_margin, seed
     )
-    tasks = build_schedule(instance, greedy_and_polish(instance, seed=seed))
+    if instance.is_trivially_infeasible():
+        return None
+    try:
+        tasks = _schedule_or_exact_fallback(instance, greedy_and_polish(instance, seed=seed))
+    except ScheduleInfeasibleError:
+        return None
     return evaluate(instance, tasks, label=f"{n_cranes} Kräne")
 
 
@@ -146,6 +189,27 @@ with st.spinner("Berechne Kranplan..."):
         int(n_bays), int(n_cranes), int(moves_avg), moves_variability, time_per_move,
         travel_time_per_bay, int(safety_margin), int(seed), run_exact,
     )
+
+if results is None:
+    if instance.is_trivially_infeasible():
+        gap = instance.min_crane_gap()
+        st.error(
+            f"🚫 Für diese Kombination gibt es **keine gültige Lösung**: bei {int(n_cranes)} Kränen "
+            f"auf {int(n_bays)} Bays stehen benachbarte Kräne schon an ihrer Startposition nur "
+            f"{gap:.1f} Bays auseinander - weniger als der eingestellte Sicherheitsabstand von "
+            f"{int(safety_margin)} Bays. Das verletzt die Non-Crossing-Regel bereits im "
+            "Stillstand, bevor überhaupt ein Kran fährt - keine noch so gute Zeitplanung (auch "
+            "nicht der exakte OR-Tools-Löser) kann das auflösen. Bitte Sicherheitsabstand "
+            "verringern oder Kranzahl reduzieren / Schiff verlängern."
+        )
+    else:
+        st.error(
+            "🚫 Für diese Kombination konnte innerhalb des Zeitlimits keine gültige Lösung "
+            "gefunden werden (weder von den eigenen Verfahren noch vom exakten OR-Tools-Löser) - "
+            "sehr enger Sicherheitsabstand bei vielen Kränen. Bitte Sicherheitsabstand verringern, "
+            "Kranzahl reduzieren oder Schiff verlängern."
+        )
+    st.stop()
 
 best = min(results, key=lambda r: r["makespan"])
 baseline = max(results, key=lambda r: r["makespan"])
@@ -250,6 +314,20 @@ if alt_cranes >= 1:
         int(n_bays), int(alt_cranes), int(moves_avg), moves_variability, time_per_move,
         travel_time_per_bay, int(safety_margin), int(seed),
     )
+else:
+    alt_hook = None
+
+if alt_cranes >= 1 and alt_hook is None:
+    # Eigener Fund: bei dieser Bay-/Sicherheitsabstands-Kombination stünden schon die
+    # Kran-Startpositionen von `alt_cranes` Kränen zu dicht beieinander (siehe
+    # `Instance.is_trivially_infeasible`) - keine Zeitplanung könnte das lösen, also gibt es
+    # hier nichts zu vergleichen.
+    st.info(
+        f"ℹ️ Mit {alt_cranes} Kränen gäbe es bei diesem Sicherheitsabstand keine gültige Lösung "
+        "mehr (die Kräne stünden selbst im Stillstand schon zu dicht beieinander) - kein "
+        "Vergleich möglich."
+    )
+elif alt_cranes >= 1:
     delta_makespan = alt_hook["makespan"] - current_hook["makespan"]
 
     core_col1, core_col2, core_col3 = st.columns(3)

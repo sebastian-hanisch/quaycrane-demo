@@ -161,16 +161,73 @@ im letztmöglichen Moment losfahren" - physikalisch naheliegender und löst die 
 Vom exakten Löser wird dieselbe Konvention jetzt aktiv erzwungen (siehe Fund oben), bleibt dort
 also immer korrekt.
 
-**Bekannte, bewusst nicht behobene Einschränkung (Heuristiken):** `earliest_feasible_start`
-(die Kernroutine aller drei Heuristiken) prüft nur die Aufgabe selbst, nicht die Wartephase
-davor - ein Versuch, das per erweitertem Push-Fenster nachzuziehen, erwies sich als nicht
-konvergent (das Wartefenster wächst mit jedem Push selbst, ein einmal erkannter Konflikt lässt
-sich dadurch nicht auflösen, anders als bei der Aufgabe selbst). Bei sehr extremen
-Reglereinstellungen (Sicherheitsabstand nahe Maximum kombiniert mit vielen Kränen auf kurzem
-Schiff) können die Heuristiken deshalb selbst noch eine solche Verletzung erzeugen - der
-exakte Löser ist davon nicht betroffen, da er sich nie auf eine explizite Warteposition
-festlegt. Bewusst dokumentiert statt versteckt: `test_exact_stays_feasible_where_heuristics_can_fail`
-hält genau diese Asymmetrie fest.
+**Ursprünglich bewusst nicht behobene Einschränkung (Heuristiken), seither vollständig
+geschlossen (siehe nächster Fund):** `earliest_feasible_start` (die Kernroutine aller drei
+Heuristiken) prüfte nur die Aufgabe selbst, nicht die Wartephase davor - ein Versuch, das per
+erweitertem Push-Fenster nachzuziehen, erwies sich als nicht konvergent (das Wartefenster
+wächst mit jedem Push selbst, ein einmal erkannter Konflikt lässt sich dadurch nicht auflösen,
+anders als bei der Aufgabe selbst). Bei sehr extremen Reglereinstellungen (Sicherheitsabstand
+nahe Maximum kombiniert mit vielen Kränen auf kurzem Schiff) konnten die Heuristiken deshalb
+selbst noch eine solche Verletzung erzeugen.
+
+## Fund: die Heuristik-Restlücke war tiefer als gedacht - vollständig geschlossen
+
+Der Nutzer wollte diese Einschränkung nicht als akzeptiert stehen lassen ("Ich möchte keine
+unzulässigen Lösungen"). Die tatsächliche Behebung brauchte mehrere Anläufe, weil sich
+nacheinander mehrere unabhängige, ineinander verschachtelte Ursachen zeigten:
+
+1. **Der explizite Sicherheitsnetz-Fallback (`_fully_sequential_schedule`) war selbst
+   unsicher.** Er nahm an, "warten bis zum Ende der spätesten bislang eingeplanten Aktivität,
+   dann losfahren" sei immer sicher - falsch: das Warten selbst (an der aktuellen Position, VOR
+   der Abfahrt) kann die ganze Zeit über zu nah an einer bereits eingeplanten fremden Aktivität
+   liegen; eine spätere Abfahrt hilft dann nicht, der Kran war ja die ganze Zeit über dort.
+2. **Blockweise Konstruktions-Reihenfolge kaskadierte in Phantom-Verzögerungen.** Ein Kran ohne
+   eigene Aufgabe gilt für die Sicherheitsprüfung als "für immer an seiner Startposition
+   gefangen" (siehe `_segments_with_unassigned_cranes`) - baute man Kran für Kran komplett
+   nacheinander, wurde ein früh eingeplanter Kran unnötig auf einen extrem späten Zeitpunkt
+   verschoben, um einem noch gar nicht bearbeiteten Nachbarn auszuweichen; das erzeugte GENAU
+   DORT eine neue, echte Verletzung. **Fix:** rundenweise verschränkte Einfügereihenfolge
+   (`_round_robin_interleave`) - jeder Kran bekommt seine erste Aufgabe früh.
+3. **`earliest_feasible_start`s Retry-Eskalation war für die REST-Absicherung nicht
+   verwendbar** - sie verschiebt den angenommenen "frei ab"-Zeitpunkt nach vorn und übersieht
+   dabei, ob die Wartezeit VOR dieser Verschiebung schon verletzt war.
+4. Die letztlich robuste Lösung: das Sicherheitsnetz baut jede Aufgabe einzeln, in
+   rundenweiser Reihenfolge, und probiert bei einer nicht sofort sicheren Platzierung
+   erschöpfend JEDEN Zeitpunkt durch, an dem sich der Sicherheitsstatus eines bereits
+   eingeplanten Segments ändern könnte (`_safe_breakpoint_departure`) - verifiziert nach jedem
+   Einfügeschritt tatsächlich gegen die komplette Instanz, statt einer Formel zu vertrauen.
+
+**Ein tieferer, eigenständiger Fund dabei: manche Kranzuordnungen sind für KEINE Zeitplanung
+schedulierbar.** Ein rein lastbasiertes Greedy-Verfahren (LPT) kann bei engem
+Sicherheitsabstand zwei benachbarten Kränen Bays zuweisen, zwischen denen es strukturell keine
+zulässige Zeitplanung mehr gibt - unabhängig davon, wie clever konstruiert wird (`quaycrane_evaluation.ScheduleInfeasibleError`). Kein Konstruktionstrick kann das lösen, nur
+eine andere Kranzuordnung. Fix: `build_schedule_robust`
+([quaycrane_heuristic.py](quaycrane_heuristic.py)) weicht dann auf die (strukturell robustere)
+Zonenbalance-Konstruktion aus, als allerletzter Ausweg auf den exakten Löser.
+
+**Und ein Fund über die Grenze der Heuristiken hinaus: manche Szenarien sind SELBST unlösbar.**
+Die Regler erlauben Kombinationen (wenige Bays, viele Kräne, maximaler Sicherheitsabstand), bei
+denen schon die gleichmäßig verteilten Kran-Startpositionen enger beieinanderliegen als der
+Sicherheitsabstand - dann verletzen zwei Kräne die Regel bereits im Stillstand, bevor überhaupt
+einer fährt, und selbst der exakte Löser fände nie eine Lösung. `Instance.is_trivially_infeasible`
+([quaycrane_scenario.py](quaycrane_scenario.py)) erkennt das vorab; die App zeigt dann eine
+klare Erklärung statt einen Absturz oder eine stillschweigend unzulässige Lösung.
+
+**Nebenbefund beim Testen des CP-SAT-Fallbacks:** der exakte Löser rundete Zeiten in seinem
+skalierten Modell mit `round()`, was bei exakten `.5`-Werten (Bankers Rounding) und generell
+gelegentlich AB rundete - bei sehr engem Sicherheitsabstand reichte diese Winzigkeit, damit eine
+von CP-SAT als "optimal und zulässig" gemeldete Lösung nach dem Zurückskalieren die (strengere,
+stetige) `check_feasible`-Prüfung knapp verfehlte. Fix: in
+[quaycrane_cp_solver.py](quaycrane_cp_solver.py) wird jetzt konsequent aufgerundet (`scaled()`)
+- das Modell nimmt nie eine kürzere Zeit an, als real gebraucht wird.
+
+Alles zusammen per Regressionstests abgesichert: `test_heuristics_stay_feasible_at_extreme_settings`
+(vormals `test_exact_stays_feasible_where_heuristics_can_fail` - Name und Zweck gedreht, jetzt
+eine Bestätigung statt einer dokumentierten Einschränkung), außerdem
+`test_instance_detects_trivial_infeasibility_from_slider_ranges` und
+`test_build_schedule_robust_recovers_from_a_structurally_unschedulable_construction`
+(`tests/test_heuristic.py`). Zusätzlich per Sweep über hunderte Bay-/Kran-/Seed-Kombinationen
+bei maximalem Sicherheitsabstand verifiziert: 0 verbleibende Verletzungen.
 
 ## Laufzeit des exakten Lösers
 

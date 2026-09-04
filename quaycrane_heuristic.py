@@ -9,7 +9,7 @@
 
 import random
 
-from quaycrane_evaluation import Task, build_schedule, earliest_feasible_start
+from quaycrane_evaluation import Task, ScheduleInfeasibleError, build_schedule, earliest_feasible_start
 
 
 def naive_construction(instance):
@@ -70,19 +70,31 @@ def _greedy_order(instance, bay_sequence):
     crane_last_pos = {c: instance.crane_start_positions[c] for c in range(instance.n_cranes)}
     order = []
     for bay in bay_sequence:
-        best_crane, best_start, best_end = None, None, None
+        best_crane, best_start, best_end, best_unconstrained, best_departure = None, None, None, None, None
         for c in range(instance.n_cranes):
             unconstrained = crane_last_end[c] + instance.travel_time(crane_last_pos[c], bay)
-            start = earliest_feasible_start(instance, tasks, c, bay, unconstrained)
+            departure, start = earliest_feasible_start(instance, tasks, c, bay, crane_last_end[c], crane_last_pos[c])
+            if start is None:
+                continue
             end = start + instance.bays[bay].duration
             if best_end is None or end < best_end:
-                best_crane, best_start, best_end = c, start, end
+                best_crane, best_start, best_end, best_unconstrained, best_departure = (
+                    c, start, end, unconstrained, departure,
+                )
+        if best_crane is None:
+            # Garantiert sichere Rückfallposition (siehe build_schedule/earliest_feasible_start-
+            # Docstring): sowohl Abfahrt als auch Ankunft nach dem Ende der zuletzt endenden
+            # bereits eingeplanten Aufgabe (bzw. Fahrt/Wartephase davor) legen, nicht nur den
+            # Bearbeitungsbeginn - sonst könnte die Fahrt selbst noch etwas verletzen.
+            best_crane = min(range(instance.n_cranes), key=lambda c: crane_last_end[c])
+            best_unconstrained = crane_last_end[best_crane] + instance.travel_time(crane_last_pos[best_crane], bay)
+            latest_end = max((t.end for t in tasks.values()), default=0.0)
+            best_departure = max(crane_last_end[best_crane], latest_end)
+            best_start = best_departure + instance.travel_time(crane_last_pos[best_crane], bay)
+            best_end = best_start + instance.bays[bay].duration
         tasks[bay] = Task(
-            bay=bay,
-            crane=best_crane,
-            start=best_start,
-            end=best_end,
-            wait=best_start - (crane_last_end[best_crane] + instance.travel_time(crane_last_pos[best_crane], bay)),
+            bay=bay, crane=best_crane, start=best_start, end=best_end,
+            wait=best_start - best_unconstrained, departure=best_departure,
         )
         crane_last_end[best_crane] = best_end
         crane_last_pos[best_crane] = bay
@@ -99,7 +111,17 @@ def greedy_construction(instance, priority="lpt"):
 
 
 def _makespan_of(instance, order):
-    tasks = build_schedule(instance, order)
+    """`build_schedule` kann feststellen, dass eine Kranzuordnung strukturell unschedulierbar ist
+    (siehe `ScheduleInfeasibleError`-Dokumentation in quaycrane_evaluation.py) - dieselbe
+    Kranzuordnung KANN dann für keine Zeitplanung mehr zulässig sein, egal wie konstruiert wird.
+    Hier als "unendlich schlecht" behandelt statt den Aufrufer (Kandidatenvergleich in
+    `greedy_and_polish`, Züge in `local_search`) abstürzen zu lassen - ein rein lastbasiertes
+    Greedy-Verfahren wie LPT kann bei engem Sicherheitsabstand durchaus so eine Zuordnung
+    produzieren; sie fällt dann einfach aus der Auswahl heraus, statt die App zu crashen."""
+    try:
+        tasks = build_schedule(instance, order)
+    except ScheduleInfeasibleError:
+        return float("inf")
     return max((t.end for t in tasks.values()), default=0.0)
 
 
@@ -155,6 +177,16 @@ def local_search(instance, order, rng=None, max_moves=400):
 
 
 def greedy_and_polish(instance, seed=0, max_moves=400):
+    """`balanced_zone_construction`s zusammenhängende Zonenaufteilung ist als einzige der drei
+    Kandidaten-Konstruktionen DAFÜR gebaut, Kran-Interferenz durch Konstruktion zu vermeiden
+    (siehe deren Docstring) - LPT und positionsbasiertes Greedy können bei engem
+    Sicherheitsabstand dagegen eine Kranzuordnung erzeugen, für die überhaupt keine zulässige
+    Zeitplanung mehr existiert (siehe `ScheduleInfeasibleError`). `_makespan_of` behandelt das
+    bereits als "unendlich schlecht", so dass `min` einen solchen Kandidaten nie wählt UND
+    `local_search` einen solchen Zug nie akzeptiert - als letztes Sicherheitsnetz wird das
+    Endergebnis hier trotzdem nochmal geprüft: bliebe (in der Praxis nie beobachtet, da
+    `balanced_zone_construction` immer als Kandidat dabei ist) dennoch ein unschedulierbares
+    Ergebnis übrig, greift explizit die Zonenaufteilung selbst."""
     rng = random.Random(seed)
     candidates = [
         balanced_zone_construction(instance),
@@ -162,4 +194,32 @@ def greedy_and_polish(instance, seed=0, max_moves=400):
         greedy_construction(instance, "spatial"),
     ]
     start_order = min(candidates, key=lambda o: _makespan_of(instance, o))
-    return local_search(instance, start_order, rng, max_moves=max_moves)
+    polished = local_search(instance, start_order, rng, max_moves=max_moves)
+    if _makespan_of(instance, polished) == float("inf"):
+        return balanced_zone_construction(instance)
+    return polished
+
+
+def build_schedule_robust(instance, order):
+    """Versucht `order` (typischerweise das Ergebnis von `naive_construction` oder
+    `balanced_zone_construction` für eine bestimmte Vergleichs-Kachel in der App); schlägt das
+    ausnahmsweise fehl (siehe `ScheduleInfeasibleError` - eine rein lastbasierte oder rein
+    positionale Konstruktion kann bei engem Sicherheitsabstand eine strukturell
+    unschedulierbare Kranzuordnung erzeugen), weicht der Reihe nach auf andere Konstruktionen
+    aus, bis eine davon eine zulässige Zeitplanung liefert. `balanced_zone_construction` steht
+    dabei bewusst an erster Ausweich-Stelle: ihre zusammenhängenden, lastbalancierten Zonen sind
+    strukturell am robustesten gegen genau dieses Problem (siehe deren Docstring).
+
+    Setzt voraus, dass das SZENARIO selbst überhaupt lösbar ist (siehe
+    `Instance.is_trivially_infeasible` - das muss VOR jedem Konstruktionsversuch geprüft werden,
+    hier wird es nicht wiederholt); ist es das nicht, schlägt zwangsläufig auch dieser Fallback
+    am Ende fehl, und die `ScheduleInfeasibleError` wird bewusst durchgereicht - kein
+    Konstruktionstrick kann eine Lösung erzwingen, wo keine existiert."""
+    for candidate_order in [order, balanced_zone_construction(instance), naive_construction(instance)]:
+        try:
+            return build_schedule(instance, candidate_order)
+        except ScheduleInfeasibleError:
+            continue
+    raise ScheduleInfeasibleError(
+        "Keine der Standard-Konstruktionen liefert für dieses Szenario eine zulässige Zeitplanung."
+    )

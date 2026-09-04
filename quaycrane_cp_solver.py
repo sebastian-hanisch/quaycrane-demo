@@ -28,6 +28,7 @@ eine mit unnötiger Wartezeit auf einem unkritischen Kran zurückgeben, obwohl e
 wartezeitfreie Lösung mit demselben Makespan existiert. Das zweite Ziel drückt jede Aufgabe so
 früh wie möglich, ohne den Makespan zu verschlechtern, und eliminiert solche Artefakte."""
 
+import math
 import time
 from dataclasses import dataclass
 
@@ -223,7 +224,16 @@ def solve_exact(instance, time_limit_seconds=8, hint_tasks=None):
     model = cp_model.CpModel()
 
     def scaled(x):
-        return round(x * SCALE)
+        # Eigener Fund: `round()` rundet auch mal AB (u.a. Bankers Rounding bei exakten .5-
+        # Werten, z.B. rundete round(0.25*10)==round(2.5) auf 2 statt 3) - das lässt das
+        # SKALIERTE Modell eine Fahrzeit oder Bearbeitungsdauer für einen Sekundenbruchteil KÜRZER
+        # annehmen, als sie in der stetigen (unskalierten) Welt tatsächlich ist. Bei sehr engem
+        # Sicherheitsabstand reicht genau diese winzige Differenz, damit eine vom Solver als
+        # "optimal und zulässig" gemeldete Lösung nach dem Zurückskalieren die (strengere,
+        # stetige) `check_feasible`-Prüfung knapp verfehlt. Aufrunden statt runden schließt das
+        # aus: das Modell nimmt dann nie eine kürzere Zeit an, als real gebraucht wird - die
+        # winzige Konservativität (< 0.1 min) fällt makespan-seitig nicht ins Gewicht.
+        return math.ceil(x * SCALE - 1e-6)
 
     durations = [scaled(b.duration) for b in instance.bays]
     total_work = sum(durations)
