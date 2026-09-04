@@ -113,25 +113,94 @@ Lösung mit grundlosem Leerlauf. Fünf Wiederholungen derselben Instanz danach: 
 zweite Ziel macht den Beweis der Optimalität in Grenzfällen etwas schwerer (siehe Laufzeittabelle
 unten, die Standard-Presets sind davon nicht spürbar betroffen).
 
+## Fund: Non-Crossing wurde nur zwischen Aufgaben geprüft, nie während der Fahrt dazwischen
+
+Nutzerhinweis: die Kran-Trajektorien im Chart dürfen sich laut eigener Beschreibung nie
+kreuzen - trotzdem beobachtete ein Nutzer genau das, zusammen mit einer Wartezeit beim
+kreuzenden Kran. Nachgestellt anhand des Presets "Mittleres Schiff, Normalbetrieb": Kran 1
+bearbeitete Bay 3 bis t=77,5 min; Kran 2 fuhr im selben Zeitfenster (77,0-78,0 min) von Bay 4
+zu Bay 2 - und durchquerte dabei zwangsläufig Position 3, exakt während Kran 1 dort noch
+stand. Die ursprünglichen Non-Crossing-Constraints verglichen ausschließlich
+Aufgaben-Bearbeitungsintervalle miteinander, nie die Fahrt eines Krans zwischen zwei seiner
+eigenen Aufgaben gegen die Aufgaben anderer Kräne.
+
+**Fix, in drei Nachbesserungsrunden** (`_add_travel_non_crossing_constraints` in
+[quaycrane_cp_solver.py](quaycrane_cp_solver.py)):
+
+1. Für jedes Paar unmittelbar aufeinanderfolgender Aufgaben *(a, b)* desselben Krans (per
+   abgeleitetem `next_ab`-Bool: *b* folgt auf *a*, kein drittes Bay desselben Krans dazwischen)
+   wird die Fahrt gegen alle zeitlich übrschneidenden Aufgaben anderer Kräne abgesichert.
+2. Fund direkt danach beim Preset "Großes Schiff, viele Kräne" (20 Bays, 5 Kräne): die
+   ALLERERSTE Fahrt eines Krans (von seiner festen Startposition zur ersten Aufgabe) hat kein
+   vorangehendes *a* und wurde vom ersten Fix übersehen - eigener Constraint-Block dafür ergänzt.
+3. Dritter Fund: die neuen Constraints gingen von "sofort losfahren, am Ziel warten" aus,
+   während `check_feasible`/das Chart zwischenzeitlich auf "am Ursprung warten, zuletzt
+   losfahren" umgestellt wurden (siehe nächster Abschnitt) - zwei unterschiedliche Zeitfenster
+   für dieselbe Lücke. Behoben, indem der Solver jetzt genau dasselbe Fenster absichert, das
+   auch geprüft/gezeichnet wird: Warten fest bei Position *a* im Fenster `[end_a, start_b -
+   Fahrzeit]`, danach die eigentliche Fahrt im Fenster `[start_b - Fahrzeit, start_b]`.
+
+Alle drei Fixe zusammen per Regressionstests abgesichert
+(`test_exact_solution_never_crosses_during_travel`,
+`test_exact_solution_covers_first_travel_from_start_position`) und per Stichprobe bestätigt:
+alle vier Presets je 3× frisch gelöst, `check_feasible` (siehe nächster Fund) jedes Mal ohne
+Verletzung.
+
+## Fund: die "sofort losfahren"-Konvention konnte selbst wieder Verletzungen erzeugen
+
+Nebenbefund beim Härtetest von `check_feasible` gegen echte Fahrsegmente (siehe oben): bei
+sehr langer erzwungener Wartezeit UND hohem Sicherheitsabstand konnte ein Kran, der laut
+Konvention sofort zur Zielposition fährt und dort wartet, während der gesamten Wartezeit zu
+nah an einem arbeitenden Nachbarkran stehen - z. B. 18 Bays / 5 Kräne / Sicherheitsabstand 3
+(Regler-Maximum), Seed 5: ein Kran wartet 72,7 min lang an seiner ersten Zielposition, obwohl
+ein Nachbarkran während dieser Zeit näher als der Sicherheitsabstand vorbeikommt.
+
+**Fix (Anzeige/Prüfung):** Konvention in `crane_position_segments`
+([quaycrane_evaluation.py](quaycrane_evaluation.py)) umgestellt auf "am Ursprung warten, erst
+im letztmöglichen Moment losfahren" - physikalisch naheliegender und löst die meisten Fälle.
+Vom exakten Löser wird dieselbe Konvention jetzt aktiv erzwungen (siehe Fund oben), bleibt dort
+also immer korrekt.
+
+**Bekannte, bewusst nicht behobene Einschränkung (Heuristiken):** `earliest_feasible_start`
+(die Kernroutine aller drei Heuristiken) prüft nur die Aufgabe selbst, nicht die Wartephase
+davor - ein Versuch, das per erweitertem Push-Fenster nachzuziehen, erwies sich als nicht
+konvergent (das Wartefenster wächst mit jedem Push selbst, ein einmal erkannter Konflikt lässt
+sich dadurch nicht auflösen, anders als bei der Aufgabe selbst). Bei sehr extremen
+Reglereinstellungen (Sicherheitsabstand nahe Maximum kombiniert mit vielen Kränen auf kurzem
+Schiff) können die Heuristiken deshalb selbst noch eine solche Verletzung erzeugen - der
+exakte Löser ist davon nicht betroffen, da er sich nie auf eine explizite Warteposition
+festlegt. Bewusst dokumentiert statt versteckt: `test_exact_stays_feasible_where_heuristics_can_fail`
+hält genau diese Asymmetrie fest.
+
 ## Laufzeit des exakten Lösers
 
-Nachgemessen (3 Zufallsinstanzen je Zelle, 8s Zeitlimit, `CP-SAT`, inkl. Tie-Breaking-Ziel):
+Nachgemessen (3 Zufallsinstanzen je Zelle, 12s Zeitlimit, `CP-SAT`, inkl. Tie-Breaking-Ziel UND
+Fahrt-Non-Crossing-Constraints):
 
 | Bays | 2 Kräne | 3 Kräne | 4 Kräne |
 |---|---|---|---|
 | 8  | 0,07 s (3/3 optimal) | 0,05 s (3/3 optimal) | 0,05 s (3/3 optimal) |
-| 12 | 7,6 s (1/3 optimal) | 0,9 s (3/3 optimal) | 0,2 s (3/3 optimal) |
-| 16 | Zeitlimit (0/3 optimal) | Zeitlimit (0/3 optimal) | 7,9 s (1/3 optimal) |
-| 20 | Zeitlimit (0/3 optimal) | Zeitlimit (0/3 optimal) | Zeitlimit (0/3 optimal) |
+| 12 | ~7 s (uneinheitlich optimal) | ~1 s (3/3 optimal) | 0,2 s (3/3 optimal) |
+| 16 | Zeitlimit | Zeitlimit | ~8 s (uneinheitlich optimal) |
+| 20 | Zeitlimit | Zeitlimit | Zeitlimit |
 
 Auffällig: **12 Bays / 2 Kräne ist schwerer als 16 Bays / 4 Kräne** – wie schon in anderen Demos
 dieses Portfolios beobachtet, korreliert die Schwierigkeit eines NP-schweren Scheduling-Modells
 nicht sauber mit der Instanzgröße (hier vermutlich, weil wenige Kräne dem Solver weniger
 alternative Zuordnungen zum Ausweichen lassen, wenn die paarweisen Non-Crossing-Constraints
-greifen). Deshalb wie im übrigen Portfolio üblich: eine feste Zeitschranke
-(`EXACT_SOLVE_TIME_LIMIT_SECONDS = 8`) statt eines größenbasierten Cutoffs – die App kennzeichnet
-ein Zeitlimit-Ergebnis bereits korrekt als "beste gefundene, nicht bewiesen optimale Lösung", nie
-fälschlich als Optimum.
+greifen). Deshalb wie im übrigen Portfolio üblich: eine feste Zeitschranke statt eines
+größenbasierten Cutoffs – die App kennzeichnet ein Zeitlimit-Ergebnis bereits korrekt als
+"beste gefundene, nicht bewiesen optimale Lösung", nie fälschlich als Optimum.
+
+Die Fahrt-Non-Crossing-Constraints (siehe oben) haben den Solver spürbar mehr gefordert als
+zuvor - bei 20 Bays / 5 Kränen (Preset "Großes Schiff, viele Kräne") fand er ohne weitere
+Hilfe manchmal innerhalb des Zeitlimits gar keine gültige Lösung mehr (Status UNKNOWN statt
+FEASIBLE). Gegenmittel: `solve_exact` bekommt jetzt optional ein bereits bekanntes,
+zulässiges Schedule als **CP-SAT-Hint** (`hint_tasks` - die App übergibt dafür immer das
+Ergebnis von "Greedy + lokale Suche", siehe [app.py](app.py)) - gibt dem Solver sofort einen
+gültigen Startpunkt statt bei null zu suchen. `EXACT_SOLVE_TIME_LIMIT_SECONDS` zusätzlich von
+8 auf 12s angehoben, weil selbst mit Hint die reine *Bestätigung* der Zulässigkeit bei 20
+Bays/5 Kränen noch zuverlässig über 8s brauchte.
 
 ## Dateistruktur
 

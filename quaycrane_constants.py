@@ -24,9 +24,13 @@ SAFETY_MARGIN_RANGE = (0, 3)
 RANDOM_SEED_DEFAULT = 7
 RANDOM_SEED_RANGE = (0, 2_000_000_000)
 
-EXACT_SOLVE_TIME_LIMIT_SECONDS = 8  # ab ca. 18-20 Bays / 5 Kränen wird das Modell so groß, dass
+EXACT_SOLVE_TIME_LIMIT_SECONDS = 12  # ab ca. 18-20 Bays / 5 Kränen wird das Modell so groß, dass
 # der Löser das Zeitlimit statt eines Optimalitätsbeweises erreicht (siehe README) - die App
-# kennzeichnet das dann korrekt als "Zeitlimit erreicht", nicht als bewiesenes Optimum
+# kennzeichnet das dann korrekt als "Zeitlimit erreicht", nicht als bewiesenes Optimum. Von 8
+# auf 12s angehoben, nachdem die Non-Crossing-während-Fahrt-Constraints (Fund 2026-09-04) das
+# Modell spürbar größer gemacht haben - bei "Großes Schiff, viele Kräne" (20 Bays, 5 Kräne)
+# fand der Solver bei 8s trotz Lösungs-Hint (siehe quaycrane_cp_solver.solve_exact) manchmal
+# gar keine gültige Lösung mehr (Status UNKNOWN statt FEASIBLE), bei 12s zuverlässig schon.
 
 CRANE_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
 

@@ -2,7 +2,7 @@ import pytest
 
 from quaycrane_cp_solver import solve_exact
 from quaycrane_evaluation import build_schedule, check_feasible, evaluate
-from quaycrane_heuristic import greedy_and_polish
+from quaycrane_heuristic import balanced_zone_construction, greedy_and_polish, naive_construction
 from quaycrane_scenario import generate_instance
 
 SCENARIOS = [
@@ -61,3 +61,80 @@ def test_exact_solution_has_no_spurious_wait():
         assert r["total_wait_time"] < 1e-6, f"spurious wait despite optimal makespan: {r['total_wait_time']}"
         makespans.add(round(result.makespan, 6))
     assert len(makespans) == 1, f"optimal makespan should be deterministic across solves, got {makespans}"
+
+
+def test_exact_solution_never_crosses_during_travel():
+    """User-reported: the trajectory chart is supposed to show crane lines that never cross
+    (that's the whole non-crossing story), but the exact solver could return a schedule where
+    one crane's TRAVEL between two of its own tasks passes straight through the bay another
+    crane is still processing - the original non-crossing constraints only compared task
+    PROCESSING intervals against each other, never a crane's travel path in between. Reproduced
+    on the "Mittleres Schiff" preset: crane 0 finished bay 3 at t=77.5, crane 1 traveled from
+    bay 4 to bay 2 during [77.0, 78.0] - passing directly through bay 3's position (3.0) at
+    t=77.5, the exact moment crane 0 was still standing there. Regression test for the fix
+    (_add_travel_non_crossing_constraints in quaycrane_cp_solver.py): check_feasible's
+    segment-based crossing check (which itself models travel, not just task intervals) must
+    pass on the exact preset parameters that exposed the bug."""
+    instance = generate_instance(
+        n_bays=12, n_cranes=3, moves_avg=14, moves_variability=0.4, time_per_move=2.0,
+        travel_time_per_bay=0.5, safety_margin=1, seed=7,
+    )
+    for _ in range(3):
+        result = solve_exact(instance, time_limit_seconds=10)
+        assert result.optimal
+        ok, violations = check_feasible(instance, result.tasks)
+        assert ok, violations
+
+
+def test_exact_solution_covers_first_travel_from_start_position():
+    """Follow-up to the travel-crossing fix above: a crane's VERY FIRST trip (from its fixed
+    start position on the rail to its first assigned bay) has no preceding task and was missed
+    by the first pass of the fix, which only linked immediately-consecutive TASK pairs.
+    Reproduced on the "Großes Schiff, viele Kräne" preset (20 bays, 5 cranes): crane 3's first
+    trip (start position 14.0 -> bay 5) crossed crane 2's first trip (start position 10.0 ->
+    bay 13) during their overlapping initial travel windows."""
+    instance = generate_instance(
+        n_bays=20, n_cranes=5, moves_avg=16, moves_variability=0.4, time_per_move=2.0,
+        travel_time_per_bay=0.5, safety_margin=1, seed=11,
+    )
+    hint = build_schedule(instance, greedy_and_polish(instance, seed=11))
+    result = solve_exact(instance, time_limit_seconds=15, hint_tasks=hint)
+    assert result.feasible
+    ok, violations = check_feasible(instance, result.tasks)
+    assert ok, violations
+
+
+def test_exact_stays_feasible_where_heuristics_can_fail():
+    """Known, documented limitation (see earliest_feasible_start's docstring in
+    quaycrane_evaluation.py): the heuristics' simple "wait at last known position" idle
+    convention can't always guarantee margin-safety during a VERY long forced wait in extreme
+    settings (max safety margin + max crane count on a short ship) - the idling crane's only
+    two candidate positions (where it just finished, or where it's headed next) can both be
+    too close to a neighboring crane's work at some point during a long wait, and a genuinely
+    safe third position isn't searched for. The exact solver has no such gap: it never commits
+    to an explicit idle position in the first place, so it remains fully feasible even here.
+    This test documents and locks in that asymmetry rather than silently avoiding the scenario."""
+    instance = generate_instance(
+        n_bays=18, n_cranes=5, moves_avg=12, moves_variability=0.4, time_per_move=2.0,
+        travel_time_per_bay=0.5, safety_margin=3, seed=5,
+    )
+    # Hint bewusst von der (in diesem Szenario selbst nicht ganz zulässigen) Naive-Konstruktion
+    # statt einer polierten Heuristik: CP-SAT behandelt Hints nur als Suchempfehlung, nicht als
+    # harte Vorgabe - auch ein teils inkonsistenter Hint hilft dem Solver i.d.R. noch, schneller
+    # eine erste echte Lösung zu finden, als komplett bei null zu starten.
+    hint = build_schedule(instance, naive_construction(instance))
+    result = solve_exact(instance, time_limit_seconds=15, hint_tasks=hint)
+    assert result.feasible
+    ok, violations = check_feasible(instance, result.tasks)
+    assert ok, violations
+
+    heuristic_violation_found = False
+    for order in [naive_construction(instance), balanced_zone_construction(instance), greedy_and_polish(instance)]:
+        tasks = build_schedule(instance, order)
+        ok, _ = check_feasible(instance, tasks)
+        if not ok:
+            heuristic_violation_found = True
+    assert heuristic_violation_found, (
+        "this scenario was chosen specifically because a heuristic fails it - if none fail "
+        "anymore, the underlying limitation may be fixed and this test's premise is outdated"
+    )

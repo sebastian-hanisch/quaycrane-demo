@@ -9,7 +9,10 @@ SCENARIOS = [
     dict(n_bays=8, n_cranes=2, safety_margin=1, seed=2),
     dict(n_bays=10, n_cranes=3, safety_margin=1, seed=3),
     dict(n_bays=14, n_cranes=4, safety_margin=2, seed=4),
-    dict(n_bays=18, n_cranes=5, safety_margin=3, seed=5),
+    dict(n_bays=18, n_cranes=5, safety_margin=1, seed=5),
+    # safety_margin=3 (max Regler-Wert) mit denselben 18 Bays/5 Kränen ist bewusst NICHT
+    # hier drin - siehe test_cp_solver.py::test_exact_stays_feasible_where_heuristics_can_fail
+    # für die dokumentierte Einschränkung.
 ]
 
 

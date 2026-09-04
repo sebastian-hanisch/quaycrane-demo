@@ -27,7 +27,16 @@ def _intervals_overlap(a_start, a_end, b_start, b_end):
 
 def earliest_feasible_start(instance, tasks_so_far, crane, bay, min_start):
     """Frühester Start >= min_start für `crane` an `bay`, ohne eine bereits eingeplante
-    Aufgabe eines anderen Krans zeitlich-räumlich zu verletzen (Non-Crossing)."""
+    Aufgabe eines anderen Krans zeitlich-räumlich zu verletzen (Non-Crossing).
+
+    Deckt nur die Aufgabe SELBST ab (Kran steht bei `bay` während [start,end]), nicht die
+    Fahrt/Wartephase davor - siehe README ("bekannte Einschränkung: Non-Crossing während sehr
+    langer Wartezeit"). Ein Versuch, die Wartephase per erweitertem Push-Fenster ebenfalls
+    abzudecken, erwies sich als nicht konvergent: das Wartefenster wächst mit jedem Push
+    selbst, sodass ein einmal erkannter Konflikt sich nicht durch Vorschieben auflösen lässt
+    (anders als bei der Aufgabe selbst, wo `start = t.end` das Fenster garantiert über den
+    Konflikt hinausschiebt). Der exakte CP-SAT-Löser braucht dieses Problem nicht auf dieselbe
+    Art zu lösen und ist davon nicht betroffen (siehe quaycrane_cp_solver.py)."""
     duration = instance.bays[bay].duration
     start = min_start
     changed = True
@@ -64,6 +73,66 @@ def build_schedule(instance, order):
     return tasks
 
 
+def crane_position_segments(instance, tasks):
+    """Liefert je Kran eine Liste von Segmenten (crane, t0, pos0, t1, pos1, kind), kind in
+    {"wait", "travel", "work"}: abwechselnd Warten am Ursprung (Position konstant), Fahrt
+    (Position ändert sich linear) und Bearbeitung (Position konstant). Konvention: der Kran
+    bleibt so lange wie möglich an seiner letzten Position stehen und fährt erst im
+    letztmöglichen Moment los, sodass er genau zum Aufgabenbeginn ankommt - nicht "sofort
+    losfahren, dann am Ziel warten". Das ist die physikalisch naheliegendere Wahl (ein Kran hat
+    keinen Grund, sich einer noch unklaren Zielposition anzunähern, solange er nicht losmuss)
+    und vermeidet unnötige Non-Crossing-Verletzungen, die die andere Konvention bei langer
+    Wartezeit erzeugen kann, wenn die Zielposition währenddessen zeitweise zu nah an einem
+    Nachbarkran liegt (Fund vom 2026-09-04: ohne diese Fahrsegmente überhaupt zu prüfen fehlte
+    die ursprüngliche, rein aufgabenbasierte Prüfung unten Non-Crossing-Verletzungen während
+    einer Fahrt komplett - diese Konvention behebt zusätzlich einen Folgefund, dass die
+    naheliegendste Konvention ("sofort losfahren") bei sehr langer Wartezeit selbst wieder
+    Verletzungen erzeugen kann). Wird sowohl von check_feasible als auch vom Trajektorien-Chart
+    genutzt, damit Prüfung und Darstellung nie auseinanderlaufen."""
+    by_crane = defaultdict(list)
+    for t in tasks.values():
+        by_crane[t.crane].append(t)
+
+    segments = []
+    for crane, ts in by_crane.items():
+        ts = sorted(ts, key=lambda t: t.start)
+        prev_t, prev_pos = 0.0, instance.crane_start_positions[crane]
+        for t in ts:
+            travel_time = instance.travel_time(prev_pos, t.bay)
+            departure = t.start - travel_time
+            if departure > prev_t + 1e-9:
+                segments.append((crane, prev_t, prev_pos, departure, prev_pos, "wait"))
+            departure = max(departure, prev_t)
+            if t.bay != prev_pos:
+                segments.append((crane, departure, prev_pos, t.start, t.bay, "travel"))
+            segments.append((crane, t.start, t.bay, t.end, t.bay, "work"))
+            prev_t, prev_pos = t.end, t.bay
+    return segments
+
+
+def _position_on_segment(t0, p0, t1, p1, t):
+    if t1 <= t0:
+        return p0
+    return p0 + (p1 - p0) * (t - t0) / (t1 - t0)
+
+
+def _segments_violate_margin(seg_left, seg_right, margin):
+    """seg_left gehört zum Kran mit dem kleineren Index (muss links bleiben). Da beide Segmente
+    linear in der Zeit sind, ist ihre Differenz über dem gemeinsamen Zeitfenster ebenfalls
+    linear - es reicht, die beiden Fensterenden zu prüfen (Extrema einer affinen Funktion)."""
+    _, t0a, p0a, t1a, p1a, _ = seg_left
+    _, t0b, p0b, t1b, p1b, _ = seg_right
+    lo, hi = max(t0a, t0b), min(t1a, t1b)
+    if lo >= hi:
+        return False
+    left_lo = _position_on_segment(t0a, p0a, t1a, p1a, lo)
+    right_lo = _position_on_segment(t0b, p0b, t1b, p1b, lo)
+    left_hi = _position_on_segment(t0a, p0a, t1a, p1a, hi)
+    right_hi = _position_on_segment(t0b, p0b, t1b, p1b, hi)
+    tol = 1e-6
+    return (left_lo + margin > right_lo + tol) or (left_hi + margin > right_hi + tol)
+
+
 def check_feasible(instance, tasks):
     violations = []
     if set(tasks.keys()) != set(range(instance.n_bays)):
@@ -80,16 +149,22 @@ def check_feasible(instance, tasks):
                     violations.append(f"Kran {crane}: Überlappung Bay {a.bay}/{b.bay}.")
 
     cranes = sorted(by_crane.keys())
+    segments_by_crane = defaultdict(list)
+    for seg in crane_position_segments(instance, tasks):
+        segments_by_crane[seg[0]].append(seg)
+
     for pi in range(len(cranes)):
         for qi in range(pi + 1, len(cranes)):
             p, q = cranes[pi], cranes[qi]
-            for tp in by_crane[p]:
-                for tq in by_crane[q]:
-                    if _intervals_overlap(tp.start, tp.end, tq.start, tq.end):
-                        if tp.bay + instance.safety_margin > tq.bay:
-                            violations.append(
-                                f"Non-Crossing verletzt: Kran {p}@Bay{tp.bay} vs. Kran {q}@Bay{tq.bay}."
-                            )
+            for seg_p in segments_by_crane[p]:
+                for seg_q in segments_by_crane[q]:
+                    if _segments_violate_margin(seg_p, seg_q, instance.safety_margin):
+                        violations.append(
+                            f"Non-Crossing verletzt (Fahrt/Warten eingeschlossen): Kran {p} "
+                            f"(t={seg_p[1]:.1f}-{seg_p[3]:.1f}, Pos {seg_p[2]:.1f}->{seg_p[4]:.1f}) "
+                            f"vs. Kran {q} (t={seg_q[1]:.1f}-{seg_q[3]:.1f}, "
+                            f"Pos {seg_q[2]:.1f}->{seg_q[4]:.1f})."
+                        )
     return len(violations) == 0, violations
 
 

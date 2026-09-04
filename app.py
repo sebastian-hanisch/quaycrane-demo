@@ -27,15 +27,19 @@ def _compute_all(n_bays, n_cranes, moves_avg, moves_variability, time_per_move, 
         n_bays, n_cranes, moves_avg, moves_variability, time_per_move, travel_time_per_bay, safety_margin, seed
     )
 
+    polish_tasks = build_schedule(instance, greedy_and_polish(instance, seed=seed))
     results = [
         evaluate(instance, build_schedule(instance, naive_construction(instance)), label="Naive (gleichmäßige Aufteilung)"),
         evaluate(instance, build_schedule(instance, balanced_zone_construction(instance)), label="Greedy (Zonenbalance)"),
-        evaluate(instance, build_schedule(instance, greedy_and_polish(instance, seed=seed)), label="Greedy + lokale Suche"),
+        evaluate(instance, polish_tasks, label="Greedy + lokale Suche"),
     ]
 
     exact_result = None
     if run_exact:
-        solve = solve_exact(instance, time_limit_seconds=C.EXACT_SOLVE_TIME_LIMIT_SECONDS)
+        # polish_tasks als Hint: gibt CP-SAT sofort einen gültigen Startpunkt, statt bei null
+        # zu suchen - wird ab ca. 16+ Bays bei 5 Kränen spürbar wichtig (siehe
+        # quaycrane_cp_solver.solve_exact-Docstring).
+        solve = solve_exact(instance, time_limit_seconds=C.EXACT_SOLVE_TIME_LIMIT_SECONDS, hint_tasks=polish_tasks)
         if solve.feasible:
             exact_label = "Exakt (OR-Tools)" if solve.optimal else "Exakt (OR-Tools, Zeitlimit)"
             exact_eval = evaluate(instance, solve.tasks, label=exact_label)

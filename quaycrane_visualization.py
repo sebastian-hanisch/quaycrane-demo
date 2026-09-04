@@ -1,6 +1,7 @@
 """Plotly-Visualisierungen: Kran-Trajektorien (Kernvisual) und Methodenvergleich."""
 
 import quaycrane_constants as C
+from quaycrane_evaluation import crane_position_segments
 
 
 def build_crane_trajectory_chart(instance, result, title=""):
@@ -9,21 +10,22 @@ def build_crane_trajectory_chart(instance, result, title=""):
     fig = go.Figure()
     tasks = result["tasks"]
 
+    segments_by_crane = {c: [] for c in range(instance.n_cranes)}
+    for seg in crane_position_segments(instance, tasks):
+        segments_by_crane[seg[0]].append(seg)
+
     for c in range(instance.n_cranes):
-        crane_tasks = sorted((t for t in tasks.values() if t.crane == c), key=lambda t: t.start)
-        xs = [0.0]
-        ys = [instance.crane_start_positions[c]]
+        segs = sorted(segments_by_crane[c], key=lambda s: s[1])
+        xs, ys = [], []
         wait_segments = []
-        for t in crane_tasks:
-            unconstrained_start = t.start - t.wait
-            xs.append(unconstrained_start)
-            ys.append(t.bay)
-            if t.wait > 1e-6:
-                wait_segments.append((unconstrained_start, t.start, t.bay))
-                xs.append(t.start)
-                ys.append(t.bay)
-            xs.append(t.end)
-            ys.append(t.bay)
+        for crane, t0, p0, t1, p1, kind in segs:
+            if not xs:
+                xs.append(t0)
+                ys.append(p0)
+            xs.append(t1)
+            ys.append(p1)
+            if kind == "wait":
+                wait_segments.append((t0, t1, p0))
 
         color = C.CRANE_COLORS[c % len(C.CRANE_COLORS)]
         fig.add_trace(
