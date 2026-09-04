@@ -115,13 +115,12 @@ def test_exact_solution_covers_first_travel_from_start_position():
 def test_heuristics_stay_feasible_at_extreme_settings():
     """Regression test for a since-fixed limitation: at this exact scenario (maximum safety
     margin, 5 cranes, an 18-bay ship, seed=5) the heuristics' construction used to produce a
-    genuine margin violation during a very long forced wait - `earliest_feasible_start`'s
-    "wait at last known position" idle convention couldn't guarantee safety there, and
-    `build_schedule`'s old safety-net fallback (`_fully_sequential_schedule`) inherited the same
-    gap instead of closing it. Fixed by making that fallback construct via an exhaustive,
-    per-insertion VERIFIED breakpoint search (see `_safe_breakpoint_departure`'s docstring in
-    quaycrane_evaluation.py) instead of trusting a single "safe" formula. All three heuristics
-    must now be feasible here too, matching the exact solver (see
+    genuine margin violation during a very long forced wait - an earlier "wait at last known
+    position" idle convention couldn't guarantee safety there. Fixed by making `build_schedule`
+    construct every task via an exhaustive, per-insertion VERIFIED breakpoint search (see
+    `_safe_breakpoint_departure`'s docstring in quaycrane_evaluation.py) instead of trusting a
+    single "safe" formula plus a separate fallback for when that formula turned out wrong. All
+    three heuristics must now be feasible here too, matching the exact solver (see
     `test_exact_solution_never_crosses_during_travel` and friends above)."""
     instance = generate_instance(
         n_bays=18, n_cranes=5, moves_avg=12, moves_variability=0.4, time_per_move=2.0,

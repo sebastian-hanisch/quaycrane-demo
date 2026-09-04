@@ -229,6 +229,29 @@ eine Bestätigung statt einer dokumentierten Einschränkung), außerdem
 (`tests/test_heuristic.py`). Zusätzlich per Sweep über hunderte Bay-/Kran-/Seed-Kombinationen
 bei maximalem Sicherheitsabstand verifiziert: 0 verbleibende Verletzungen.
 
+## Aufräumen: der "schnelle, aber nicht durchgängig korrekte" Pfad war überflüssig
+
+Nachdem der obige Fund gezeigt hatte, dass nur die verifizierte Breakpoint-Suche
+(`_safe_breakpoint_departure`) tatsächlich beweisbar sicher ist, blieb die Frage: wozu dann noch
+der ursprüngliche "optimistische" Konstruktionspfad (`_build_schedule_incremental` mit seiner
+Intervall-Vermeidungs-Logik `earliest_feasible_start`/`_safe_departure`/`_safe_start`) als
+Normalfall, wenn er nur als Fallback abgesichert war? `quaycrane_evaluation.py` baut jetzt in
+EINEM einzigen Durchgang: jede Aufgabe wird sofort per Breakpoint-Suche platziert und dabei
+gegen die echten, bereits eingeplanten Segmente verifiziert - kein zweiter, separater
+Sicherheitsnetz-Pfad mehr nötig. Das entfernt rund 260 Zeilen (`earliest_feasible_start`,
+`_safe_departure`, `_safe_start`, `_dangerous_segments`, `_segments_with_unassigned_cranes`,
+`_advance_past_forbidden`, `_range_safe_against_segment`, `_build_schedule_incremental`,
+`_fully_sequential_schedule` als eigene Funktion) - genau die Stellen, an denen die
+Bugfix-Runden oben stattfanden.
+
+Nebeneffekt: die neue Konstruktion ist auch spürbar schneller, weil jede Platzierung nur noch
+gegen die tatsächlich betroffenen Segmente (die des NEU eingefügten Krans-Schritts, nicht das
+gesamte bisherige Schedule neu aufgebaut) geprüft wird, statt bei jedem Kandidaten das komplette
+Zwischenergebnis neu zu rekonstruieren. Nachgemessen bei 24 Bays / 5 Kränen (größte von der App
+erlaubte Größe): `build_schedule` im Mittel 1.45ms -> 0.28ms pro Aufruf (Worst Case im Sweep
+9.8ms -> 0.5ms), `greedy_and_polish` (inkl. voller lokaler Suche, 400 Züge) 0.70s -> 0.10s -
+knapp 7x schneller bei jedem Preset-/Regler-Wechsel in der App.
+
 ## Laufzeit des exakten Lösers
 
 Nachgemessen (3 Zufallsinstanzen je Zelle, 12s Zeitlimit, `CP-SAT`, inkl. Tie-Breaking-Ziel UND

@@ -9,7 +9,7 @@
 
 import random
 
-from quaycrane_evaluation import Task, ScheduleInfeasibleError, build_schedule, earliest_feasible_start
+from quaycrane_evaluation import ScheduleInfeasibleError, build_schedule
 
 
 def naive_construction(instance):
@@ -65,38 +65,20 @@ def balanced_zone_construction(instance):
 
 
 def _greedy_order(instance, bay_sequence):
-    tasks = {}
-    crane_last_end = {c: 0.0 for c in range(instance.n_cranes)}
-    crane_last_pos = {c: instance.crane_start_positions[c] for c in range(instance.n_cranes)}
+    """LPT-/positionsbasiertes Listenscheduling: jede Bay (in `bay_sequence`) an den Kran mit der
+    frühesten GESCHÄTZTEN Fertigstellung, ohne Rücksicht auf Kran-Interferenz - reine, schnelle
+    Rangfolge-Heuristik. Die tatsächliche, sichere Zeitplanung (inkl. aller durch Interferenz
+    erzwungenen Wartezeiten) baut `build_schedule` später ohnehin von Grund auf und unabhängig
+    davon; hier zählt nur, WER welche Bay bekommt, nicht WANN genau."""
+    crane_last_end = [0.0] * instance.n_cranes
+    crane_last_pos = list(instance.crane_start_positions)
     order = []
     for bay in bay_sequence:
-        best_crane, best_start, best_end, best_unconstrained, best_departure = None, None, None, None, None
-        for c in range(instance.n_cranes):
-            unconstrained = crane_last_end[c] + instance.travel_time(crane_last_pos[c], bay)
-            departure, start = earliest_feasible_start(instance, tasks, c, bay, crane_last_end[c], crane_last_pos[c])
-            if start is None:
-                continue
-            end = start + instance.bays[bay].duration
-            if best_end is None or end < best_end:
-                best_crane, best_start, best_end, best_unconstrained, best_departure = (
-                    c, start, end, unconstrained, departure,
-                )
-        if best_crane is None:
-            # Garantiert sichere Rückfallposition (siehe build_schedule/earliest_feasible_start-
-            # Docstring): sowohl Abfahrt als auch Ankunft nach dem Ende der zuletzt endenden
-            # bereits eingeplanten Aufgabe (bzw. Fahrt/Wartephase davor) legen, nicht nur den
-            # Bearbeitungsbeginn - sonst könnte die Fahrt selbst noch etwas verletzen.
-            best_crane = min(range(instance.n_cranes), key=lambda c: crane_last_end[c])
-            best_unconstrained = crane_last_end[best_crane] + instance.travel_time(crane_last_pos[best_crane], bay)
-            latest_end = max((t.end for t in tasks.values()), default=0.0)
-            best_departure = max(crane_last_end[best_crane], latest_end)
-            best_start = best_departure + instance.travel_time(crane_last_pos[best_crane], bay)
-            best_end = best_start + instance.bays[bay].duration
-        tasks[bay] = Task(
-            bay=bay, crane=best_crane, start=best_start, end=best_end,
-            wait=best_start - best_unconstrained, departure=best_departure,
+        best_crane = min(
+            range(instance.n_cranes),
+            key=lambda c: crane_last_end[c] + instance.travel_time(crane_last_pos[c], bay),
         )
-        crane_last_end[best_crane] = best_end
+        crane_last_end[best_crane] += instance.travel_time(crane_last_pos[best_crane], bay) + instance.bays[bay].duration
         crane_last_pos[best_crane] = bay
         order.append((bay, best_crane))
     return order
