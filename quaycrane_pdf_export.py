@@ -10,7 +10,7 @@ def generate_crane_plan_pdf(label, instance, result):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "Containerbruecken-Einsatzplan", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.cell(0, 10, "Containerbrücken-Einsatzplan", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
     pdf.set_font("Helvetica", "", 9)
     pdf.set_text_color(120, 120, 120)
