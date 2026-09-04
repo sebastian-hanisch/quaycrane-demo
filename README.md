@@ -89,15 +89,39 @@ Die LPT- und positions-sortierten Listenscheduling-Varianten bleiben als zusätz
 für die lokale Suche erhalten (`greedy_and_polish` probiert alle drei und startet von der
 besten), tragen aber in der Praxis selten bei.
 
+## Fund: CP-SAT ließ Kräne grundlos warten, obwohl der Makespan optimal war
+
+Nutzerhinweis: im Preset "Mittleres Schiff, Normalbetrieb" zeigte die Exakt-Lösung manchmal
+sichtbare Wartezeit ganz am Anfang der Kran-Trajektorien, obwohl die Kräne dort räumlich weit
+auseinander lagen - visuell sollte dort keine Interferenz auftreten. Nachgestellt: dieselbe
+Instanz fünfmal hintereinander mit `solve_exact` gelöst, der Makespan blieb jedes Mal exakt
+106 min, die ausgewiesene Wartezeit schwankte aber zwischen 0,0 und 1,1 min.
+
+**Ursache:** Das Modell minimierte ausschließlich den Makespan. Unter mehreren Lösungen mit
+demselben optimalen Makespan ist dem Solver jede davon gleich lieb - eine mit unnötigem
+Leerlauf auf einem unkritischen Kran erfüllt die Zielfunktion genauso gut wie eine
+wartezeitfreie. `num_search_workers=8` lässt mehrere Suchpfade parallel laufen; je nachdem,
+welcher zuerst eine beweisbar optimale Lösung liefert, landet man auf einer mit oder ohne
+solche kosmetische Wartezeit - nicht deterministisch, von Lauf zu Lauf unterschiedlich.
+
+**Fix:** lexikografisches Tie-Breaking-Ziel in [quaycrane_cp_solver.py](quaycrane_cp_solver.py)
+hinzugefügt - primär weiterhin Makespan minimieren, als zweites (mit einem Gewicht multipliziert,
+das garantiert nie über den Makespan gewinnen kann) die Summe aller Endzeiten. Das drückt jede
+Aufgabe so früh wie möglich, ohne den Makespan zu verschlechtern, und eliminiert dadurch jede
+Lösung mit grundlosem Leerlauf. Fünf Wiederholungen derselben Instanz danach: Makespan immer
+106 min, Wartezeit immer 0,0 min (`test_exact_solution_has_no_spurious_wait`). Nebeneffekt: das
+zweite Ziel macht den Beweis der Optimalität in Grenzfällen etwas schwerer (siehe Laufzeittabelle
+unten, die Standard-Presets sind davon nicht spürbar betroffen).
+
 ## Laufzeit des exakten Lösers
 
-Nachgemessen (3 Zufallsinstanzen je Zelle, 8s Zeitlimit, `CP-SAT`):
+Nachgemessen (3 Zufallsinstanzen je Zelle, 8s Zeitlimit, `CP-SAT`, inkl. Tie-Breaking-Ziel):
 
 | Bays | 2 Kräne | 3 Kräne | 4 Kräne |
 |---|---|---|---|
-| 8  | 0,06 s (3/3 optimal) | 0,04 s (3/3 optimal) | 0,05 s (3/3 optimal) |
-| 12 | 6,6 s (2/3 optimal) | 0,6 s (3/3 optimal) | 0,1 s (3/3 optimal) |
-| 16 | Zeitlimit (0/3 optimal) | Zeitlimit (0/3 optimal) | 4,4 s (3/3 optimal) |
+| 8  | 0,07 s (3/3 optimal) | 0,05 s (3/3 optimal) | 0,05 s (3/3 optimal) |
+| 12 | 7,6 s (1/3 optimal) | 0,9 s (3/3 optimal) | 0,2 s (3/3 optimal) |
+| 16 | Zeitlimit (0/3 optimal) | Zeitlimit (0/3 optimal) | 7,9 s (1/3 optimal) |
 | 20 | Zeitlimit (0/3 optimal) | Zeitlimit (0/3 optimal) | Zeitlimit (0/3 optimal) |
 
 Auffällig: **12 Bays / 2 Kräne ist schwerer als 16 Bays / 4 Kräne** – wie schon in anderen Demos

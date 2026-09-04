@@ -374,11 +374,17 @@ während die rechtere Brücke gleichzeitig die linkere Bay bearbeitet), ist jede
 Überlappung unabhängig vom Sicherheitsabstand unzulässig - eine physische Unmöglichkeit, da sich
 Kräne nie überholen können.
 
-Zielfunktion: minimiere den **Makespan**
+Zielfunktion: minimiere primär den **Makespan**, als lexikografisches Tie-Breaking-Ziel
+zusätzlich die Summe aller Endzeiten (verhindert, dass der Solver unter mehreren gleich-optimalen
+Lösungen willkürlich eine mit unnötigem Leerlauf auf einem unkritischen Kran zurückgibt - siehe
+README für den Fund, der das nötig gemacht hat)
 
 $$
-\min \; \max_i \; (t_i + d_i)
+\min \; \Big(\max_i \; (t_i + d_i)\Big) \cdot W \;+\; \sum_i (t_i + d_i)
 $$
+
+mit einem Gewicht $W$, das groß genug ist, dass eine Verbesserung des Tie-Breaking-Ziels nie
+eine Verschlechterung des Makespans aufwiegen kann.
 
 Gelöst mit Google OR-Tools CP-SAT in [quaycrane_cp_solver.py](quaycrane_cp_solver.py), auf
 LIMIT_PLACEHOLDERs Rechenzeit begrenzt - für die in dieser Demo möglichen Größen (bis 24 Bays,

@@ -14,7 +14,13 @@ Modell: jede Bay wird genau einem Kran zugewiesen (x[i][c]) und bekommt Start-/E
   oder "gekreuzt" (linkere Bay bekommt den Kran mit dem größeren Index) - das ist eine
   physische Unmöglichkeit und wird bei zeitlicher Überschneidung komplett verboten.
 
-Minimiert wird der Makespan (= Schiffsliegezeit)."""
+Minimiert wird primär der Makespan (= Schiffsliegezeit); als lexikografisches
+Tie-Breaking-Ziel zusätzlich die Summe aller Endzeiten. Ohne dieses zweite Ziel ist dem Solver
+unter mehreren gleich-optimalen Makespan-Lösungen jede davon gleich lieb - er kann (und tut es
+in der Praxis, je nachdem welcher der parallelen Suchpfade zuerst eine optimale Lösung findet)
+eine mit unnötiger Wartezeit auf einem unkritischen Kran zurückgeben, obwohl eine
+wartezeitfreie Lösung mit demselben Makespan existiert. Das zweite Ziel drückt jede Aufgabe so
+früh wie möglich, ohne den Makespan zu verschlechtern, und eliminiert solche Artefakte."""
 
 import time
 from dataclasses import dataclass
@@ -96,7 +102,14 @@ def solve_exact(instance, time_limit_seconds=8):
 
     makespan = model.NewIntVar(0, horizon, "makespan")
     model.AddMaxEquality(makespan, end)
-    model.Minimize(makespan)
+
+    # Lexikografisches Tie-Breaking: unter allen Lösungen mit optimalem Makespan die mit der
+    # kleinsten Summe aller Endzeiten waehlen (siehe Docstring oben). tie_break_weight ist eine
+    # sichere obere Schranke fuer die Summe aller Endzeiten (jede einzelne <= horizon, n Aufgaben)
+    # plus 1 - so kostet ein einziger Zeitschritt mehr Makespan garantiert mehr, als das
+    # Tie-Breaking-Ziel je einsparen koennte, ändert also nie die primäre Optimallösung.
+    tie_break_weight = n * horizon + 1
+    model.Minimize(makespan * tie_break_weight + sum(end))
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit_seconds
