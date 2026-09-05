@@ -444,7 +444,7 @@ with st.expander("🔧 Wie wir das erreichen – vollständiger Methodenvergleic
             hide_index=True,
             column_config=COMPARISON_TABLE_COLUMN_CONFIG,
         )
-        st.plotly_chart(build_makespan_comparison_chart(all_results), use_container_width=True)
+        st.plotly_chart(build_makespan_comparison_chart(all_results), use_container_width=True, key="makespan_comparison")
 
 with st.expander("Wie funktioniert diese Demo?"):
     st.markdown(
