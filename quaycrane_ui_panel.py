@@ -14,8 +14,8 @@ def render_crane_panel(prefix, label, instance, result):
     m4.metric("Lastungleichgewicht", f"{result['load_imbalance']:.1f} min")
 
     fig = build_crane_trajectory_chart(instance, result, title=label)
-    st.plotly_chart(fig, use_container_width=True, key=f"{prefix}_trajectory")
-    st.plotly_chart(build_crane_load_chart(instance, result), use_container_width=True, key=f"{prefix}_load")
+    st.plotly_chart(fig, width="stretch", key=f"{prefix}_trajectory")
+    st.plotly_chart(build_crane_load_chart(instance, result), width="stretch", key=f"{prefix}_load")
 
     pdf_bytes = generate_crane_plan_pdf(label, instance, result)
     st.download_button(
