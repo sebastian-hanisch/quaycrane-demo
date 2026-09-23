@@ -381,6 +381,16 @@ waren zwei separate Probleme mit derselben Symptomatik:
 | `quaycrane_ui_panel.py` | Wiederverwendbares Panel je Methode im Methodenvergleich-Expander |
 | `tests/` | Machbarkeitsprüfung (inkl. handgebauter Verletzungsfälle), Heuristik-Eigenschaften über mehrere Szenarien, CP-SAT-Cross-Check |
 
+## Verwandte Demos mit demselben mathematischen Modell
+
+Verschiedene Themen im Portfolio teilen (fast) dasselbe Modell. Vor einer neuen Demo-Idee deshalb das
+Modell vergleichen, nicht die Kulisse (Stand 2026-09-23):
+
+- **Nichtüberholen/Blockieren auf gemeinsamer Bahn:** diese Demo ist der Referenzfall (Kräne auf einer Schiene,
+  1-D). Dasselbe Modell steckt in jeder Idee, bei der sich Ressourcen gegenseitig behindern, etwa mehrere
+  Kommissionierer in schmalen Gängen (offene Erweiterung der `order_batch-demo`, dort ein 2-D-Gangnetz).
+- Die `doppelspiel-demo` gehört nicht dazu: sie ist ein Zwei-Stufen-Flow-Shop (Johnson), ein anderes Modell.
+
 ## Lokal ausführen
 
 ```bash
