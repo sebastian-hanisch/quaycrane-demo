@@ -41,7 +41,7 @@ COMPARISON_TABLE_COLUMN_CONFIG = {
 }
 
 
-def _schedule_or_exact_fallback(instance, order):
+def _schedule_or_exact_fallback(instance, order, exact_solve_cache):
     """`build_schedule_robust` deckt fast alle Fälle ab, in denen EINE der drei Konstruktionen
     eine strukturell unschedulierbare Kranzuordnung erzeugt (siehe deren Docstring) - in extrem
     engen Szenarien (Kran-Startabstand nur knapp über dem Sicherheitsabstand, siehe
@@ -49,11 +49,19 @@ def _schedule_or_exact_fallback(instance, order):
     aber auch keine der drei eigenen Konstruktionen mehr eine zulässige Kranzuordnung finden,
     obwohl das Szenario selbst durchaus lösbar ist. Letzter Ausweg dann: der exakte CP-SAT-Löser
     - der committet sich nie auf eine explizite Warteposition (siehe quaycrane_cp_solver.py) und
-    hat deshalb genau diese Klasse von Problem grundsätzlich nicht."""
+    hat deshalb genau diese Klasse von Problem grundsätzlich nicht.
+
+    `exact_solve_cache`: solve_exact haengt nur von `instance` ab, nicht von `order` - ruft der
+    Aufrufer diese Funktion mehrmals fuer dieselbe `instance` auf (z.B. fuer die drei
+    Konstruktionen in `_compute_heuristics`), wuerde ein struktureller Fehlschlag sonst denselben
+    (bis zu 12s teuren) CP-SAT-Lauf mehrfach wiederholen. Ein vom Aufrufer pro Instanz geteiltes
+    dict haelt das Ergebnis fest, sodass der Solver hoechstens einmal laeuft."""
     try:
         return build_schedule_robust(instance, order)
     except ScheduleInfeasibleError:
-        solve = solve_exact(instance, time_limit_seconds=C.EXACT_SOLVE_TIME_LIMIT_SECONDS)
+        if "solve" not in exact_solve_cache:
+            exact_solve_cache["solve"] = solve_exact(instance, time_limit_seconds=C.EXACT_SOLVE_TIME_LIMIT_SECONDS)
+        solve = exact_solve_cache["solve"]
         if solve.feasible:
             return solve.tasks
         raise
@@ -68,15 +76,17 @@ def _compute_heuristics(n_bays, n_cranes, moves_avg, moves_variability, time_per
     if instance.is_trivially_infeasible():
         return instance, None
 
+    exact_solve_cache = {}
     try:
-        polish_tasks = _schedule_or_exact_fallback(instance, greedy_and_polish(instance, seed=seed))
+        polish_tasks = _schedule_or_exact_fallback(instance, greedy_and_polish(instance, seed=seed), exact_solve_cache)
         results = [
             evaluate(
-                instance, _schedule_or_exact_fallback(instance, naive_construction(instance)),
+                instance, _schedule_or_exact_fallback(instance, naive_construction(instance), exact_solve_cache),
                 label="Naive (gleichmäßige Aufteilung)",
             ),
             evaluate(
-                instance, _schedule_or_exact_fallback(instance, balanced_zone_construction(instance)),
+                instance,
+                _schedule_or_exact_fallback(instance, balanced_zone_construction(instance), exact_solve_cache),
                 label="Greedy (Zonenbalance)",
             ),
             evaluate(instance, polish_tasks, label="Greedy + lokale Suche"),
@@ -120,7 +130,7 @@ def _best_makespan_for_crane_count(n_bays, n_cranes, moves_avg, moves_variabilit
     if instance.is_trivially_infeasible():
         return None
     try:
-        tasks = _schedule_or_exact_fallback(instance, greedy_and_polish(instance, seed=seed))
+        tasks = _schedule_or_exact_fallback(instance, greedy_and_polish(instance, seed=seed), {})
     except ScheduleInfeasibleError:
         return None
     return evaluate(instance, tasks, label=f"{n_cranes} Kräne")
