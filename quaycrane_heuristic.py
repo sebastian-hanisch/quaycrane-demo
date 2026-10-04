@@ -3,7 +3,8 @@
 
 - naive_construction: gleichmäßige, rein positionale Aufteilung ohne Rücksicht auf Arbeitslast.
 - greedy_construction: LPT-Listenscheduling - schwerste Bays zuerst, jede an den Kran mit
-  frühestmöglicher Fertigstellung (inkl. Fahrzeit und Non-Crossing-Wartezeit).
+  frühester GESCHÄTZTER Fertigstellung (nur Fahrzeit, ohne Rücksicht auf Kran-Interferenz -
+  siehe _greedy_order-Docstring).
 - greedy_and_polish: die bessere von zwei Greedy-Startlösungen (LPT- und Positions-Reihenfolge),
   anschließend lokale Suche (Kran-Tausch und Kran-Verlagerung einzelner Bays)."""
 
@@ -197,9 +198,13 @@ def build_schedule_robust(instance, order):
     hier wird es nicht wiederholt); ist es das nicht, schlägt zwangsläufig auch dieser Fallback
     am Ende fehl, und die `ScheduleInfeasibleError` wird bewusst durchgereicht - kein
     Konstruktionstrick kann eine Lösung erzwingen, wo keine existiert."""
-    for candidate_order in [order, balanced_zone_construction(instance), naive_construction(instance)]:
+    for build_candidate in (
+        lambda: order,
+        lambda: balanced_zone_construction(instance),
+        lambda: naive_construction(instance),
+    ):
         try:
-            return build_schedule(instance, candidate_order)
+            return build_schedule(instance, build_candidate())
         except ScheduleInfeasibleError:
             continue
     raise ScheduleInfeasibleError(
