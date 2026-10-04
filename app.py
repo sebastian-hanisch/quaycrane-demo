@@ -143,10 +143,11 @@ st.caption("🎯 Schnellstart – ein Beispielszenario laden:")
 PRESET_HELP = {
     "Kleines Feederschiff": "Wenige Bays, zwei Kräne - Interferenz spielt kaum eine Rolle.",
     "Mittleres Schiff, Normalbetrieb": "Typische Größe, drei Kräne - guter Ausgangspunkt zum Herumspielen.",
-    "Großes Schiff, viele Kräne": "Fünf Kräne auf einem langen Schiff - hier zeigt sich, wie stark "
-    "sich zusätzliche Kräne gegenseitig ausbremsen können.",
-    "Enge Sicherheitsabstände": "Großer Sicherheitsabstand zwischen Kränen - Interferenz-Wartezeit "
-    "wird zum dominanten Effekt.",
+    "Großes Schiff, viele Kräne": "Fünf Kräne auf einem langen Schiff - mit jedem zusätzlichen Kran sinkt der Zeitgewinn "
+    "(siehe \"Lohnt sich ein zusätzlicher Kran?\"); Interferenz-Wartezeit tritt hier kaum auf.",
+    "Enge Sicherheitsabstände": "Großer Sicherheitsabstand zwischen Kränen - ein fünfter Kran wäre bei 14 Bays "
+    "gar nicht mehr zulässig, und die naive Aufteilung verliert Zeit durch Interferenz-Wartezeit "
+    "(die besseren Verfahren kaum).",
 }
 preset_cols = st.columns(len(C.PRESETS))
 for i, name in enumerate(C.PRESETS.keys()):
@@ -460,7 +461,7 @@ Wenn zwei Kräne gleichzeitig arbeiten, müssen sie einen **Sicherheitsabstand**
 (**Non-Crossing-Constraint**, Kim & Park 2004) - genau das begrenzt, wie viel zusätzliche
 Parallelität weitere Kräne wirklich bringen.
 
-Vier Verfahren stehen zur Auswahl (im Expander "Wie wir das erreichen" alle nebeneinander),
+Drei eigene Verfahren stehen zur Auswahl (im Expander "Wie wir das erreichen" alle nebeneinander),
 zusätzlich eine **exakte Referenzlösung** (Google OR-Tools CP-SAT):
 
 - **Naive (gleichmäßige Aufteilung)**: jeder Kran bekommt gleich viele Bays, ohne Rücksicht auf
@@ -538,6 +539,6 @@ st.markdown("---")
 
 st.caption(
     "Diese Demo ist Teil des Portfolios von [Sebastian Hanisch](https://sebastianhanisch.net) – "
-    "Operations Research und Machine Learning. Interesse an einer maßgeschneiderten Lösung für "
-    "Ihr Unternehmen? [Kontakt aufnehmen](https://sebastianhanisch.net/kontakt.html)"
+    "Operations Research und Machine Learning ([Über mich](https://sebastianhanisch.net/ueber-mich.html)). "
+    "Mehr zum Thema: [Hafenlogistik optimieren](https://sebastianhanisch.net/hafenlogistik-optimierung.html)."
 )
