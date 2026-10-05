@@ -57,8 +57,9 @@ Formale Herleitung im Expander "📐 Mathematische Formulierung" der App.
 - **Exakt** (Google OR-Tools CP-SAT): löst das vollständige Scheduling-Modell exakt – Referenz
   und Cross-Check für die drei Heuristiken. Läuft bewusst nur auf Klick (Button in der
   Seitenleiste), nicht automatisch bei jeder Regler-Änderung mit – bei größeren Szenarien kann
-  das mehrere Sekunden dauern, während die drei Heuristiken durchweg unter einer Millisekunde
-  brauchen (siehe Performance-Fund weiter unten).
+  das mehrere Sekunden dauern, während naive Aufteilung und Zonenbalance samt Zeitplan-Aufbau
+  bei 24 Bays / 5 Kränen im Mittel unter einer Millisekunde brauchen und Greedy + lokale Suche
+  etwa 0,1 s (siehe Messung im Abschnitt zum Zeitplan-Aufbau weiter unten).
 
 Die Primäransicht zeigt **dynamisch** die bei den aktuellen Reglereinstellungen tatsächlich
 schnellste Methode (unter den drei Heuristiken) – keine wird pauschal bevorzugt.
@@ -68,11 +69,26 @@ schnellste Methode (unter den drei Heuristiken) – keine wird pauschal bevorzug
 Erste Fassung des Greedy-Verfahrens war klassisches **LPT-Listenscheduling** (Longest Processing
 Time first): Bays absteigend nach Dauer sortiert, jede an die Brücke mit frühestmöglicher
 Fertigstellung. Für "normale" parallele Maschinen ohne Interferenz ist das eine bewährte,
-~4/3-approximative Heuristik. Hier schnitt sie in mehreren Testszenarien **schlechter** ab als
-die naive gleichmäßige Aufteilung – z. B. bei 10 Bays / 3 Kränen / Sicherheitsabstand 1 (Seed 3):
-Naive 94,3 min, LPT-Greedy **138,8 min** (110 min reine Interferenz-Wartezeit), bei 12 Bays /
-4 Kränen / Sicherheitsabstand 2 (Seed 5): Naive 95,8 min, LPT-Greedy **142,2 min** (164,5 min
-Wartezeit).
+~4/3-approximative Heuristik. Hier schneidet sie **schlechter** ab als die naive gleichmäßige
+Aufteilung. Die ersten Fundzahlen der Erstfassung (z. B. LPT 138,8 min gegen naive 94,3 min) ließen
+sich mit der heutigen Konstruktion nicht mehr nachstellen und sind durch Neumessungen ersetzt.
+
+**Messung (heutiger Code, feste Zufalls-Seeds; Standardwerte außer den genannten: 14 Moves
+± 40 %, 2,0 min je Move, 0,5 min Fahrzeit je Bay):**
+
+- **Preset "Kleines Feederschiff"** (8 Bays, 2 Kräne, Sicherheitsabstand 1, Zufalls-Seed 3): naive
+  102,5 min ohne Wartezeit, LPT-Greedy **105,5 min** mit 2,0 min Wartezeit durch Interferenz,
+  die positionsbasierte Variante `"spatial"` 111,5 min mit 17,5 min Wartezeit.
+- **240 Instanzen** (8/10/12/16 Bays × 2/3/4 Kräne × Zufalls-Seeds 0-19), Sicherheitsabstand 1:
+  `build_schedule` weist die LPT-Zuordnung in **220 von 240 Instanzen (92 %)** ab (mit dieser
+  Zuordnung und Reihenfolge je Kran findet die Konstruktion keine zulässige Zeitplanung), die naive
+  Aufteilung nie. In den 20 Instanzen, in denen beide zulässig sind, ist LPT in 12 länger und in 8
+  kürzer als naive, im Mittel **4,3 % länger**, mit im Mittel 12,5 min Wartezeit gegen 0,0 min.
+  Bei Sicherheitsabstand 2 ist LPT in 234 von 240 Instanzen abgelehnt (naive in 7).
+- **Wie strukturell ist die Ablehnung?** Für 30 abgelehnte LPT-Zuordnungen (Abstand 1, Zufalls-Seeds
+  0-7, Größen 8/2, 10/3, 12/3, 12/4) prüfte CP-SAT mit fest vorgegebener Kranzuordnung: bei 13 ist
+  sie für **jede** Zeitplanung unzulässig (bewiesen), bei 17 gibt es eine zulässige Zeitplanung –
+  dort scheitert nur die Konstruktion mit ihrer festen Reihenfolge je Kran.
 
 **Ursache:** LPT wählt die Kranzuordnung rein nach Arbeitslast, ohne auf die räumliche Lage der
 Bays zu achten. Weil Bay-Index gleichzeitig die Position auf der Schiene ist, führt das zu einer
@@ -84,21 +100,34 @@ Instanz zwischen Kränen hin- und herspringen.
 
 **Fix:** die Zonenbalance-Konstruktion (`balanced_zone_construction`) ersetzt das Listenscheduling
 als primäre Greedy-Methode. Da sie das Schiff strukturell in nicht überlappende, zusammenhängende
-Zonen zerlegt, bleibt Kran-Interferenz praktisch immer bei 0 – bei denselben zwei Beispielen
-liefert sie 94,3 min bzw. 95,8 min (identisch mit der naiven Aufteilung in diesen Fällen, da die
-Arbeitslast dort schon recht gleichmäßig verteilt war) und die anschließende lokale Suche
-verbessert von dort auf 88,8 min bzw. 93,8 min – nahe am exakten Optimum (88,8 min bzw. 93,2 min).
-Die LPT- und positions-sortierten Listenscheduling-Varianten bleiben als zusätzliche Startpunkte
-für die lokale Suche erhalten (`greedy_and_polish` probiert alle drei und startet von der
-besten), tragen aber in der Praxis selten bei.
+Zonen zerlegt, bleibt Kran-Interferenz meist bei 0. Gemessen über dieselben 240 Instanzen
+(Sicherheitsabstand 1, Zeitplan jeweils zulässig): Zonenbalance im Mittel **3,6 %** kürzer als die
+naive Aufteilung, Greedy + lokale Suche **7,1 %** kürzer. Liegezeiten der vier Presets in min
+(naive / Zonenbalance / Greedy + lokale Suche / exakt):
+
+| Preset | naive | Zonenbalance | Greedy + lokale Suche | exakt |
+|---|---|---|---|---|
+| Kleines Feederschiff | 102,5 | 102,5 | 101,5 | 101,0 |
+| Mittleres Schiff, Normalbetrieb | 112,5 | 112,5 | 107,0 | 106,0 |
+| Großes Schiff, viele Kräne | 150,5 | 150,5 | 145,0 | kein Ergebnis in 12 s (siehe Laufzeit) |
+| Enge Sicherheitsabstände | 116,85 (6,3 min Wartezeit) | 112,85 | 110,05 | 109,2 |
+
+Das exakte Modell rechnet in 0,1-min-Schritten und rundet Zeiten auf; sein Ergebnis kann daher bis
+zu 0,1 min über dem stetigen Optimum liegen (Beispiel: 10 Bays / 3 Kräne / Abstand 1 / Zufalls-Seed 3,
+Standardwerte sonst: Greedy + lokale Suche 104,8 min, exakt 104,9 min; naive und Zonenbalance je
+110,3 min). Die LPT- und positions-sortierten Listenscheduling-Varianten bleiben als zusätzliche
+Startpunkte für die lokale Suche erhalten (`greedy_and_polish` probiert alle drei und startet von
+der besten), tragen aber in der Praxis selten bei. Die Zahlen sind in `tests/test_claims.py`
+belegt.
 
 ## Fund: CP-SAT ließ Kräne grundlos warten, obwohl der Makespan optimal war
 
 Nutzerhinweis: im Preset "Mittleres Schiff, Normalbetrieb" zeigte die Exakt-Lösung manchmal
 sichtbare Wartezeit ganz am Anfang der Kran-Trajektorien, obwohl die Kräne dort räumlich weit
 auseinander lagen - visuell sollte dort keine Interferenz auftreten. Nachgestellt: dieselbe
-Instanz fünfmal hintereinander mit `solve_exact` gelöst, der Makespan blieb jedes Mal exakt
-106 min, die ausgewiesene Wartezeit schwankte aber zwischen 0,0 und 1,1 min.
+Instanz mehrfach hintereinander mit `solve_exact` gelöst: der Makespan blieb jedes Mal gleich,
+die ausgewiesene Wartezeit schwankte aber von Lauf zu Lauf (die damaligen Zahlen stammen aus der
+Fassung vor dem Fix und sind nicht mehr nachstellbar).
 
 **Ursache:** Das Modell minimierte ausschließlich den Makespan. Unter mehreren Lösungen mit
 demselben optimalen Makespan ist dem Solver jede davon gleich lieb - eine mit unnötigem
@@ -111,8 +140,10 @@ solche kosmetische Wartezeit - nicht deterministisch, von Lauf zu Lauf unterschi
 hinzugefügt - primär weiterhin Makespan minimieren, als zweites (mit einem Gewicht multipliziert,
 das garantiert nie über den Makespan gewinnen kann) die Summe aller Endzeiten. Das drückt jede
 Aufgabe so früh wie möglich, ohne den Makespan zu verschlechtern, und eliminiert dadurch jede
-Lösung mit grundlosem Leerlauf. Fünf Wiederholungen derselben Instanz danach: Makespan immer
-106 min, Wartezeit immer 0,0 min (`test_exact_solution_has_no_spurious_wait`). Nebeneffekt: das
+Lösung mit grundlosem Leerlauf. Neu gemessen (heutiger Code, fünf Läufe desselben Presets
+"Mittleres Schiff, Normalbetrieb", Zeitlimit 30 s): Makespan immer 106,0 min (jedes Mal als optimal
+bewiesen), Wartezeit immer 0,0 min (`test_exact_solution_has_no_spurious_wait`,
+`tests/test_claims.py`). Nebeneffekt: das
 zweite Ziel macht den Beweis der Optimalität in Grenzfällen etwas schwerer (siehe Laufzeittabelle
 unten, die Standard-Presets sind davon nicht spürbar betroffen).
 
@@ -120,10 +151,10 @@ unten, die Standard-Presets sind davon nicht spürbar betroffen).
 
 Nutzerhinweis: die Kran-Trajektorien im Chart dürfen sich laut eigener Beschreibung nie
 kreuzen - trotzdem beobachtete ein Nutzer genau das, zusammen mit einer Wartezeit beim
-kreuzenden Kran. Nachgestellt anhand des Presets "Mittleres Schiff, Normalbetrieb": Kran 1
-bearbeitete Bay 3 bis t=77,5 min; Kran 2 fuhr im selben Zeitfenster (77,0-78,0 min) von Bay 4
-zu Bay 2 - und durchquerte dabei zwangsläufig Position 3, exakt während Kran 1 dort noch
-stand. Die ursprünglichen Non-Crossing-Constraints verglichen ausschließlich
+kreuzenden Kran. Beobachtet am Preset "Mittleres Schiff, Normalbetrieb" (die damaligen Zeitpunkte stammen aus
+der Fassung vor dem Fix und sind nicht mehr nachstellbar): ein Kran fuhr von Bay 4 zu Bay 2 und
+durchquerte dabei zwangsläufig Position 3, exakt während ein anderer Kran dort noch stand und
+arbeitete. Die ursprünglichen Non-Crossing-Constraints verglichen ausschließlich
 Aufgaben-Bearbeitungsintervalle miteinander, nie die Fahrt eines Krans zwischen zwei seiner
 eigenen Aufgaben gegen die Aufgaben anderer Kräne.
 
@@ -145,18 +176,22 @@ eigenen Aufgaben gegen die Aufgaben anderer Kräne.
 
 Alle drei Fixe zusammen per Regressionstests abgesichert
 (`test_exact_solution_never_crosses_during_travel`,
-`test_exact_solution_covers_first_travel_from_start_position`) und per Stichprobe bestätigt:
-alle vier Presets je 3× frisch gelöst, `check_feasible` (siehe nächster Fund) jedes Mal ohne
-Verletzung.
+`test_exact_solution_covers_first_travel_from_start_position`) und per Stichprobe bestätigt
+(neu gemessen, heutiger Code, mit Greedy-Hint wie in der App): "Kleines Feederschiff", "Mittleres
+Schiff, Normalbetrieb" und "Enge Sicherheitsabstände" je 3× frisch gelöst, `check_feasible` (siehe
+nächster Fund) jedes Mal ohne Verletzung; "Großes Schiff, viele Kräne" lieferte in 3 von 3 Läufen
+innerhalb von 12 s keine Lösung (siehe Laufzeit).
 
 ## Fund: die "sofort losfahren"-Konvention konnte selbst wieder Verletzungen erzeugen
 
 Nebenbefund beim Härtetest von `check_feasible` gegen echte Fahrsegmente (siehe oben): bei
 sehr langer erzwungener Wartezeit UND hohem Sicherheitsabstand konnte ein Kran, der laut
 Konvention sofort zur Zielposition fährt und dort wartet, während der gesamten Wartezeit zu
-nah an einem arbeitenden Nachbarkran stehen - z. B. 18 Bays / 5 Kräne / Sicherheitsabstand 3
-(Regler-Maximum), Seed 5: ein Kran wartet 72,7 min lang an seiner ersten Zielposition, obwohl
-ein Nachbarkran während dieser Zeit näher als der Sicherheitsabstand vorbeikommt.
+nah an einem arbeitenden Nachbarkran stehen - beobachtet bei 18 Bays / 5 Kränen / Sicherheitsabstand 3
+(Regler-Maximum), Seed 5 (die damalige Wartezeit von 72,7 min stammt aus der Fassung vor dem
+Fix und ist nicht mehr nachstellbar). Heute, mit 12 Moves je Bay wie im Regressionstest: naive
+Aufteilung 114,4 min (4,3 min Wartezeit), Zonenbalance und Greedy + lokale Suche je 99,0 min
+(10,3 min Wartezeit), alle drei laut `check_feasible` ohne Verletzung (`tests/test_claims.py`).
 
 **Fix (Anzeige/Prüfung):** Konvention in `crane_position_segments`
 ([quaycrane_evaluation.py](quaycrane_evaluation.py)) umgestellt auf "am Ursprung warten, erst
@@ -200,11 +235,12 @@ nacheinander mehrere unabhängige, ineinander verschachtelte Ursachen zeigten:
    eingeplanten Segments ändern könnte (`_safe_breakpoint_departure`) - verifiziert nach jedem
    Einfügeschritt tatsächlich gegen die komplette Instanz, statt einer Formel zu vertrauen.
 
-**Ein tieferer, eigenständiger Fund dabei: manche Kranzuordnungen sind für KEINE Zeitplanung
-schedulierbar.** Ein rein lastbasiertes Greedy-Verfahren (LPT) kann bei engem
-Sicherheitsabstand zwei benachbarten Kränen Bays zuweisen, zwischen denen es strukturell keine
-zulässige Zeitplanung mehr gibt - unabhängig davon, wie clever konstruiert wird (`quaycrane_evaluation.ScheduleInfeasibleError`). Kein Konstruktionstrick kann das lösen, nur
-eine andere Kranzuordnung. Fix: `build_schedule_robust`
+**Ein tieferer, eigenständiger Fund dabei: manche Kranzuordnungen sind für den Zeitplaner nicht
+bildbar.** Ein rein lastbasiertes Greedy-Verfahren (LPT) kann bei engem
+Sicherheitsabstand zwei benachbarten Kränen Bays zuweisen, für die die Konstruktion mit fester Reihenfolge je Kran
+keine zulässige Zeitplanung findet (`quaycrane_evaluation.ScheduleInfeasibleError`). Laut der
+Messung oben (30 abgelehnte Zuordnungen) ist das bei 13 für jede Zeitplanung beweisbar unzulässig, bei 17 gibt es
+eine zulässige. Dort hilft kein Konstruktionstrick bei derselben Reihenfolge, nur eine andere Kranzuordnung. Fix: `build_schedule_robust`
 ([quaycrane_heuristic.py](quaycrane_heuristic.py)) weicht dann auf die (strukturell robustere)
 Zonenbalance-Konstruktion aus, als allerletzter Ausweg auf den exakten Löser.
 
@@ -229,8 +265,13 @@ Alles zusammen per Regressionstests abgesichert: `test_heuristics_stay_feasible_
 eine Bestätigung statt einer dokumentierten Einschränkung), außerdem
 `test_instance_detects_trivial_infeasibility_from_slider_ranges` und
 `test_build_schedule_robust_recovers_from_a_structurally_unschedulable_construction`
-(`tests/test_heuristic.py`). Zusätzlich per Sweep über hunderte Bay-/Kran-/Seed-Kombinationen
-bei maximalem Sicherheitsabstand verifiziert: 0 verbleibende Verletzungen.
+(`tests/test_heuristic.py`). Zusätzlich per Sweep gemessen (heutiger Code): 6-24 Bays × 1-5 Kräne × Zufalls-Seeds 0-4 bei
+Sicherheitsabstand 3, Standardwerte sonst - 475 Kombinationen, davon 90 schon als Szenario
+unlösbar (siehe unten) und 385 lösbar. Für alle 385 gilt: **0 Verletzungen** in `check_feasible`
+bei jedem Zeitplan, den `build_schedule` überhaupt liefert. Daneben lehnt `build_schedule`
+die Kranzuordnung der naiven Aufteilung in 19, der Zonenbalance in 17 und von Greedy + lokale
+Suche in 7 der 385 Fälle ab - dann weicht die App auf eine andere Konstruktion bzw. auf den
+exakten Löser aus (`build_schedule_robust`, `_schedule_or_exact_fallback`).
 
 ## Aufräumen: der "schnelle, aber nicht durchgängig korrekte" Pfad war überflüssig
 
@@ -247,13 +288,18 @@ Sicherheitsnetz-Pfad mehr nötig. Das entfernt rund 260 Zeilen (`earliest_feasib
 `_fully_sequential_schedule` als eigene Funktion) - genau die Stellen, an denen die
 Bugfix-Runden oben stattfanden.
 
-Nebeneffekt: die neue Konstruktion ist auch spürbar schneller, weil jede Platzierung nur noch
-gegen die tatsächlich betroffenen Segmente (die des NEU eingefügten Krans-Schritts, nicht das
-gesamte bisherige Schedule neu aufgebaut) geprüft wird, statt bei jedem Kandidaten das komplette
-Zwischenergebnis neu zu rekonstruieren. Nachgemessen bei 24 Bays / 5 Kränen (größte von der App
-erlaubte Größe): `build_schedule` im Mittel 1.45ms -> 0.28ms pro Aufruf (Worst Case im Sweep
-9.8ms -> 0.5ms), `greedy_and_polish` (inkl. voller lokaler Suche, 400 Züge) 0.70s -> 0.10s -
-knapp 7x schneller bei jedem Preset-/Regler-Wechsel in der App.
+Nebeneffekt: die neue Konstruktion ist schnell, weil jede Platzierung nur noch gegen die
+tatsächlich betroffenen Segmente geprüft wird. Neu gemessen (heutiger Code, ein Windows-Rechner,
+Standardwerte, Sicherheitsabstand 1, je 10 Zufalls-Seeds, Mittel / Maximum in ms, jeweils
+Konstruktion der Zuordnung plus `build_schedule`):
+
+| Größe | naive | Zonenbalance | Greedy + lokale Suche (400 Züge) |
+|---|---|---|---|
+| 12 Bays / 3 Kräne | 0,13 / 0,2 | 0,15 / 0,2 | 15 / 24 |
+| 24 Bays / 5 Kräne (größte von der App erlaubte Größe) | 0,46 / 0,7 | 0,64 / 1,1 | 114 / 130 |
+
+Die Vorher-Werte der früheren Fassung (1,45 ms auf 0,28 ms, "knapp 7x schneller") sind nicht mehr
+nachstellbar und entfallen.
 
 ## Fund: CI schlug fehl - und deckte dabei einen echten Modellierungsfehler im exakten Löser auf
 
@@ -313,23 +359,25 @@ Szenario trifft dank `@st.cache_data` sofort den Cache, kein wiederholtes Lösen
 
 ## Laufzeit des exakten Lösers
 
-Nachgemessen (3 Zufallsinstanzen je Zelle, 12s Zeitlimit, `CP-SAT`, inkl. Tie-Breaking-Ziel UND
-Fahrt-Non-Crossing-Constraints):
+Neu gemessen (heutiger Code; 3 Zufalls-Seeds 0-2 je Zelle, Standardwerte, Sicherheitsabstand 1,
+12 s Zeitlimit, CP-SAT mit 8 Suchpfaden auf einem Windows-Rechner mit 16 Kernen, ohne Hint, inkl.
+Tie-Breaking-Ziel und Fahrt-Non-Crossing-Constraints; Median der Laufzeit; Zeiten hängen von der
+Hardware ab):
 
 | Bays | 2 Kräne | 3 Kräne | 4 Kräne |
 |---|---|---|---|
-| 8  | 0,07 s (3/3 optimal) | 0,05 s (3/3 optimal) | 0,05 s (3/3 optimal) |
-| 12 | ~7 s (uneinheitlich optimal) | ~1 s (3/3 optimal) | 0,2 s (3/3 optimal) |
-| 16 | Zeitlimit | Zeitlimit | ~8 s (uneinheitlich optimal) |
-| 20 | Zeitlimit | Zeitlimit | Zeitlimit |
+| 8  | 0,5 s (3/3 optimal) | 0,7 s (3/3 optimal) | 0,5 s (3/3 optimal) |
+| 12 | Zeitlimit (0/3 optimal, Lösung vorhanden) | 8,9 s (3/3 optimal) | 4,9 s (3/3 optimal) |
+| 16 | Zeitlimit (0/3 optimal, Lösung vorhanden) | Zeitlimit (0/3 optimal, Lösung vorhanden) | Zeitlimit (0/3 optimal, Lösung vorhanden) |
+| 20 | Zeitlimit, 0/3 mit Lösung | Zeitlimit, 0/3 mit Lösung | Zeitlimit, 0/3 mit Lösung |
 
-Auffällig: **12 Bays / 2 Kräne ist schwerer als 16 Bays / 4 Kräne** – wie schon in anderen Demos
-dieses Portfolios beobachtet, korreliert die Schwierigkeit eines NP-schweren Scheduling-Modells
-nicht sauber mit der Instanzgröße (hier vermutlich, weil wenige Kräne dem Solver weniger
-alternative Zuordnungen zum Ausweichen lassen, wenn die paarweisen Non-Crossing-Constraints
-greifen). Deshalb wie im übrigen Portfolio üblich: eine feste Zeitschranke statt eines
-größenbasierten Cutoffs – die App kennzeichnet ein Zeitlimit-Ergebnis bereits korrekt als
-"beste gefundene, nicht bewiesen optimale Lösung", nie fälschlich als Optimum.
+Auffällig: bei gleicher Bayzahl wird das Modell mit **mehr Kränen leichter** (12 Bays: Zeitlimit,
+8,9 s, 4,9 s für 2, 3, 4 Kräne). Das ist keine Garantie für andere Größen und Seeds (drei Instanzen
+je Zelle); denkbare Erklärung, nicht geprüft: wenige Kräne lassen dem Solver weniger Ausweichmöglichkeiten
+bei den paarweisen Non-Crossing-Constraints. Deshalb wie im übrigen Portfolio üblich: eine feste
+Zeitschranke statt eines größenbasierten Cutoffs - die App kennzeichnet ein Zeitlimit-Ergebnis
+mit Lösung als "beste gefundene, nicht bewiesen optimale Lösung", nie fälschlich als Optimum, und
+meldet ein Zeitlimit ohne Lösung als solches.
 
 Die Fahrt-Non-Crossing-Constraints (siehe oben) haben den Solver spürbar mehr gefordert als
 zuvor - bei 20 Bays / 5 Kränen (Preset "Großes Schiff, viele Kräne") fand er ohne weitere
@@ -339,7 +387,11 @@ zulässiges Schedule als **CP-SAT-Hint** (`hint_tasks` - die App übergibt dafü
 Ergebnis von "Greedy + lokale Suche", siehe [app.py](app.py)) - gibt dem Solver sofort einen
 gültigen Startpunkt statt bei null zu suchen. `EXACT_SOLVE_TIME_LIMIT_SECONDS` zusätzlich von
 8 auf 12s angehoben, weil selbst mit Hint die reine *Bestätigung* der Zulässigkeit bei 20
-Bays/5 Kränen noch zuverlässig über 8s brauchte.
+Bays/5 Kränen noch über 8s brauchte. **Neu gemessen (heutiger Code):** das Preset "Großes Schiff,
+viele Kräne" mit dem Hint "Greedy + lokale Suche" (145,0 min) lieferte in 3 von 3 Läufen innerhalb von
+12 s keine Lösung (Zeitlimit ohne Ergebnis, 11,5-13,0 s); die App zeigt dann die Meldung "OR-Tools
+hat innerhalb des Zeitlimits keine gültige Lösung gefunden". Die frühere Aussage, 12 s reichten bei
+diesem Preset zuverlässig, ist damit nicht bestätigt.
 
 ## Fund: dieselbe Minuten-Metrik zeigte an verschiedenen Stellen unterschiedlich viele Nachkommastellen
 

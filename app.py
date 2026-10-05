@@ -532,7 +532,7 @@ $$
 mit einem Gewicht $W$, das groß genug ist, dass eine Verbesserung des Tie-Breaking-Ziels nie
 eine Verschlechterung des Makespans aufwiegen kann.
 
-Gelöst mit Google OR-Tools CP-SAT in [quaycrane_cp_solver.py](quaycrane_cp_solver.py), auf
+Gelöst mit Google OR-Tools CP-SAT in `quaycrane_cp_solver.py`, auf
 LIMIT_PLACEHOLDERs Rechenzeit begrenzt - für die in dieser Demo möglichen Größen (bis 24 Bays,
 5 Kräne) bei moderater Kranzahl fast immer das bewiesene Optimum, bei vielen Bays UND vielen
 Kränen gleichzeitig manchmal nur die beste innerhalb des Zeitlimits gefundene Lösung (dann klar

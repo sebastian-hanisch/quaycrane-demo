@@ -95,7 +95,7 @@ def test_instance_detects_trivial_infeasibility_from_slider_ranges():
 def test_build_schedule_robust_recovers_from_a_structurally_unschedulable_construction():
     """Own finding: at tight (but not trivially infeasible, see the test above) safety margins,
     `balanced_zone_construction`'s own contiguous-zone crane assignment can occasionally still
-    be structurally unschedulable for ANY timing (see `ScheduleInfeasibleError` and
+    be rejected by the LPT scheduler for every timing (this is NOT a proof that no feasible assignment exists, see `ScheduleInfeasibleError` and
     `build_schedule_robust`'s docstrings) - locks in both halves: the raw construction really
     does fail here (so this regression case stays meaningful), and the robust wrapper recovers a
     genuinely feasible schedule instead of propagating the exception."""

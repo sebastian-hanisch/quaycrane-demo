@@ -12,23 +12,27 @@ Kandidaten-Zeitpunkt wird die tatsächliche, resultierende Trajektorie GEGEN DIE
 committeten Segmente anderer Kräne geprüft (`_safe_breakpoint_departure`) - nicht gegen eine
 Formel, von der bloß angenommen wird, dass sie sicher ist. Damit ist per Konstruktion jeder
 zurückgegebene Zeitplan zulässig, sofern für die gegebene KRANZUORDNUNG überhaupt irgendeine
-zulässige Zeitplanung existiert. Eigener Fund: die Kranzuordnung selbst kann - unabhängig von
-jeder Zeitplanung - strukturell unmöglich sein (z.B. weist ein rein lastbasiertes Greedy-
-Verfahren wie LPT zwei benachbarten Kränen Bays zu, die bei engem Sicherheitsabstand keinerlei
-gemeinsame sichere Zeitplanung mehr zulassen - siehe `ScheduleInfeasibleError`); das ist keine
-Lücke in der Konstruktion, sondern eine Eigenschaft der `order` selbst - `build_schedule` meldet
-das dann, statt eine unzulässige Lösung zurückzugeben."""
+zulässige Zeitplanung existiert. Eigener Fund: eine Kranzuordnung kann für den Zeitplaner nicht
+bildbar sein (z.B. weist ein rein lastbasiertes Greedy-Verfahren wie LPT zwei benachbarten
+Kränen Bays zu, die bei engem Sicherheitsabstand kollidieren - siehe `ScheduleInfeasibleError`;
+laut Messung ist das in 13 von 30 abgelehnten LPT-Zuordnungen für jede Zeitplanung beweisbar
+unzulässig, in 17 nur für die Konstruktion mit fester Reihenfolge je Kran) -
+`build_schedule` meldet das dann, statt eine unzulässige Lösung zurückzugeben."""
 
 from collections import defaultdict
 from dataclasses import dataclass
 
 
 class ScheduleInfeasibleError(Exception):
-    """Für DIESE Kranzuordnung (`order`) existiert keine zulässige Zeitplanung, für keinen
-    Einfügezeitpunkt - unabhängig davon, wie clever konstruiert wird (siehe
-    `_safe_breakpoint_departure`s Dokumentation für ein konkretes Beispiel: zwei benachbarte
-    Kräne, deren zugewiesene Bays bei engem Sicherheitsabstand keinen gemeinsamen sicheren
-    Zeitplan mehr zulassen). Aufrufer, die mehrere Kandidaten-`order`s vergleichen (siehe
+    """Die Konstruktion (`build_schedule`) findet für DIESE Kranzuordnung (`order`) mit ihrer
+    festen Reihenfolge je Kran keine sichere Zeitplanung - die Zuordnung ist für den
+    Zeitplaner nicht bildbar (siehe `_safe_breakpoint_departure`s Dokumentation für ein konkretes
+    Beispiel: zwei benachbarte Kräne, deren zugewiesene Bays bei engem Sicherheitsabstand
+    kollidieren). Das heißt NICHT, dass jede Zeitplanung für diese Zuordnung unmöglich wäre:
+    Messung (README, 30 abgelehnte LPT-Zuordnungen, CP-SAT mit fest vorgegebener Zuordnung):
+    13 sind für jede Zeitplanung beweisbar unzulässig, bei 17 gibt es eine zulässige, die nur
+    die Konstruktion mit ihrer festen Reihenfolge nicht findet. Ob eine ANDERE Zuordnung zulässig
+    wäre, ist damit nicht gesagt. Aufrufer, die mehrere Kandidaten-`order`s vergleichen (siehe
     quaycrane_heuristic.py), behandeln dies als "unendlich schlecht" statt abzustürzen."""
 
 
@@ -288,6 +292,13 @@ def _crossing_and_overlap_violations(instance, tasks):
             for b in ts:
                 if a.bay != b.bay and _intervals_overlap(a.start, a.end, b.start, b.end):
                     violations.append(f"Kran {crane}: Überlappung Bay {a.bay}/{b.bay}.")
+        # Fahrzeit als Rüstzeit: ein Kran kann nicht schneller fahren als die Fahrzeit zwischen den Bays (auch nicht von seiner Startposition zur ersten Bay)
+        prev_end, prev_pos = 0.0, instance.crane_start_positions[crane]
+        for t in sorted(ts, key=lambda t: t.start):
+            earliest = prev_end + instance.travel_time(prev_pos, t.bay)
+            if t.start < earliest - 1e-6:
+                violations.append(f"Kran {crane}: Fahrzeit zu Bay {t.bay} zu kurz (Start {t.start:.2f}, frühestens {earliest:.2f}).")
+            prev_end, prev_pos = t.end, t.bay
 
     cranes = sorted(by_crane.keys())
     segments_by_crane = defaultdict(list)
